@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>02 absolute</title>
+<style>
+  /* Absolute positioning: anchors must be inferred from --probe viewports. */
+  html, body { margin: 0; height: 100%; }
+  body { background: #05080d; font-family: "Segoe UI", sans-serif; }
+
+  #stage { position: relative; width: 100%; height: 100%; }
+
+  /* Pinned to the top-left corner at a fixed size. */
+  .badge {
+    position: absolute; left: 24px; top: 24px;
+    width: 180px; height: 64px;
+    background: rgba(20, 26, 36, 0.9); border: 1px solid #22303f; border-radius: 6px;
+    display: flex; flex-direction: column; justify-content: center; padding: 0 12px;
+  }
+  .badge .k { font-size: 11px; color: #5f7385; letter-spacing: 1px; text-transform: uppercase; }
+  .badge .v { font-size: 22px; color: #cfe8ff; font-weight: 600; }
+
+  /* Pinned to the top-right (right edge anchor). */
+  #statusPill {
+    position: absolute; right: 24px; top: 24px;
+    width: 220px; height: 40px;
+    background: #0e1a12; border: 1px solid #1d3b26; border-radius: 20px;
+    display: flex; align-items: center; justify-content: center;
+    color: #6ee7a8; font-size: 13px;
+  }
+
+  /* Bottom-centre: horizontally centred anchor. */
+  #bottomBar {
+    position: absolute; left: 50%; bottom: 32px;
+    width: 420px; height: 52px;
+    margin-left: -210px;
+    background: rgba(14, 20, 30, 0.85); border: 1px solid #22303f; border-radius: 8px;
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    color: #9fb3c8; font-size: 13px; letter-spacing: 2px;
+  }
+
+  /* Full-bleed corner brackets (stretch anchors 0..1). */
+  #frameTop {
+    position: absolute; left: 0; right: 0; top: 0; height: 3px;
+    background: #1f6feb;
+  }
+  #frameBottom {
+    position: absolute; left: 12px; right: 12px; bottom: 0; height: 3px;
+    background: #58a6ff;
+  }
+
+  /* A flow column that also contains one absolutely positioned element. */
+  #stack {
+    position: absolute; left: 40px; top: 120px; width: 300px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #stack .item { background: #0c131c; border: 1px solid #1c2a38; padding: 8px 10px; color: #7d93a8; font-size: 12px; }
+  #stack .floating {
+    position: absolute; right: -18px; top: 6px;
+    width: 12px; height: 12px; border-radius: 6px; background: #f0883e;
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div class="badge" id="altBadge">
+      <div class="k">Altitude</div>
+      <div class="v">128 m</div>
+    </div>
+    <div id="statusPill">ARMED &middot; GPS LOCK</div>
+    <div id="bottomBar">HOLD THROTTLE TO ARM</div>
+    <div id="frameTop"></div>
+    <div id="frameBottom"></div>
+
+    <div id="stack">
+      <div class="item">Waypoint 01 &mdash; ridge</div>
+      <div class="item">Waypoint 02 &mdash; tower</div>
+      <div class="item">Waypoint 03 &mdash; gate</div>
+      <div class="floating"></div>
+    </div>
+  </div>
+</body>
+</html>

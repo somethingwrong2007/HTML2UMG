@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Anchors — Html2UMG responsive probe</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #070b11; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #c9d6e4; position: relative; }
+
+  /* A. full-width bar pinned to the top: horizontal stretch, fixed height */
+  #header {
+    position: absolute; left: 0; right: 0; top: 0; height: 64px;
+    background: #0f1a26; border-bottom: 1px solid #22334a;
+    font-size: 15px; line-height: 64px; padding: 0 24px; color: #7fb7ff;
+  }
+
+  /* B. sidebar: vertical stretch, fixed width, pinned left */
+  #sidebar {
+    position: absolute; left: 0; top: 64px; bottom: 0; width: 280px;
+    background: #0c141d; border-right: 1px solid #1d2b3c; padding: 20px;
+    font-size: 13px;
+  }
+
+  /* C. footer: horizontal stretch, pinned bottom, fixed height */
+  #footer {
+    position: absolute; left: 280px; right: 0; bottom: 0; height: 48px;
+    background: #0f1a26; border-top: 1px solid #22334a;
+    font-size: 12px; line-height: 48px; padding: 0 20px; color: #6f8ba5;
+  }
+
+  /* D. card: stretch on all four edges with margins (the classic "fill remaining") */
+  #card {
+    position: absolute; left: 312px; top: 96px; right: 40px; bottom: 96px;
+    background: #101a24; border: 1px solid #22333f; border-radius: 12px;
+    padding: 22px;
+  }
+
+  /* E. centered box with fixed size (point anchor at centre) */
+  #centerBox {
+    position: absolute; left: 50%; top: 50%; width: 360px; height: 140px;
+    margin-left: -180px; margin-top: -70px;
+    background: #13202c; border: 1px solid #2c4257; border-radius: 10px;
+    text-align: center; line-height: 140px; font-size: 16px; color: #9ac0e2;
+  }
+
+  /* F. badge pinned to the top-right corner (point anchor right-top) */
+  #rightBadge {
+    position: absolute; right: 32px; top: 20px; width: 168px; height: 36px;
+    background: #17263a; border: 1px solid #2f4a63; border-radius: 18px;
+    text-align: center; line-height: 36px; font-size: 12px; color: #9ac0e2;
+  }
+
+  /* G. half-width bar centred horizontally (percentage sizing) */
+  #halfBar {
+    position: absolute; left: 25%; width: 50%; bottom: 64px; height: 8px;
+    background: #3fa9f5; border-radius: 4px;
+  }
+
+  /* H. max-width centred container (responsive container) */
+  #maxBox {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 90px;
+    width: 100%; max-width: 560px; height: 40px;
+    background: #16202b; border: 1px solid #25384a; border-radius: 8px;
+    text-align: center; line-height: 40px; font-size: 12px; color: #8298ad;
+  }
+
+  /* I. bottom-right fixed chip (point anchor right-bottom) */
+  #chip {
+    position: absolute; right: 24px; bottom: 60px; width: 96px; height: 28px;
+    background: #1b2632; border: 1px solid #2a3a4a; border-radius: 6px;
+    text-align: center; line-height: 28px; font-size: 11px; color: #c8d8e6;
+  }
+</style>
+</head>
+<body>
+  <div id="header" data-ue-name="Header">ANCHOR PROBE</div>
+  <div id="sidebar" data-ue-name="Sidebar">SIDEBAR<br>vertical stretch</div>
+  <div id="footer" data-ue-name="Footer">footer &mdash; horizontal stretch</div>
+  <div id="card" data-ue-name="Card">fill remaining (all four edges)</div>
+  <div id="centerBox" data-ue-name="CenterBox">centre point anchor</div>
+  <div id="rightBadge" data-ue-name="RightBadge">top-right</div>
+  <div id="halfBar" data-ue-name="HalfBar"></div>
+  <div id="maxBox" data-ue-name="MaxBox">max-width centred</div>
+  <div id="chip" data-ue-name="Chip">bottom-right</div>
+</body>
+</html>

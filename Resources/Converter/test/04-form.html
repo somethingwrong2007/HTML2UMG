@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>04 form</title>
+<style>
+  /* Form controls: every interactive element the contract maps to a UMG widget. */
+  html, body { margin: 0; height: 100%; }
+  body { background: #0b0f14; font-family: "Segoe UI", sans-serif; color: #dbe6f0; }
+
+  #dialog {
+    display: flex; flex-direction: column; gap: 14px;
+    width: 520px; padding: 22px 24px;
+    background: #111820; border: 1px solid #1e2b38; border-radius: 10px;
+  }
+  #heading { font-size: 18px; font-weight: 700; letter-spacing: 1px; color: #f0f7ff; }
+  #hint { font-size: 12px; color: #6e8298; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field > label { font-size: 11px; letter-spacing: 1px; color: #5f7589; text-transform: uppercase; }
+
+  input[type="text"], input[type="number"], textarea, select {
+    height: 34px; padding: 0 10px;
+    background: #0a1017; border: 1px solid #233342; border-radius: 6px;
+    color: #e6f0f9; font-size: 13px; font-family: "Segoe UI", sans-serif;
+  }
+  textarea { height: 68px; padding: 8px 10px; }
+
+  .inlineRow { display: flex; flex-direction: row; gap: 12px; align-items: flex-end; }
+  .inlineRow > .field { flex: 1; }
+
+  .checkRow { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+  .checkRow > label { font-size: 13px; color: #a9bccd; }
+
+  #actions { display: flex; flex-direction: row; justify-content: flex-end; gap: 10px; }
+  .btn {
+    height: 34px; padding: 0 18px; border-radius: 6px;
+    background: #1b2632; border: 1px solid #2a3a4a; color: #c8d8e6;
+    font-size: 13px;
+  }
+  .btn.primary { background: #1f6feb; border-color: #388bfd; color: #ffffff; font-weight: 600; }
+  /* Interaction states: these must survive as real UButton brush states, not be lost. */
+  .btn:hover { background: #243444; border-color: #3d5670; }
+  .btn:active { background: #121a24; border-color: #1d2a38; }
+  .btn:disabled { opacity: 0.45; }
+  .btn.primary:hover { background: #2b7cf5; border-color: #58a6ff; }
+  .btn.primary:active { background: #1858c4; border-color: #2b6bd4; }
+  #uploadProgress { height: 8px; border-radius: 4px; background: #16202b; }
+</style>
+</head>
+<body>
+  <form id="dialog">
+    <div id="heading">MISSION PARAMETERS</div>
+    <div id="hint">Values are pushed to the flight controller on save.</div>
+
+    <div class="field">
+      <label for="missionName">Mission name</label>
+      <input type="text" id="missionName" placeholder="Ridge run 01" value="Ridge run 01">
+    </div>
+
+    <div class="inlineRow">
+      <div class="field">
+        <label for="altLimit">Altitude limit (m)</label>
+        <input type="number" id="altLimit" min="20" max="500" step="10" value="120">
+      </div>
+      <div class="field">
+        <label for="speedLimit">Speed limit (m/s)</label>
+        <input type="number" id="speedLimit" min="1" max="30" step="1" value="15">
+      </div>
+      <div class="field">
+        <label for="rtlMode">Return mode</label>
+        <select id="rtlMode">
+          <option value="rtl">Return to launch</option>
+          <option value="land">Land in place</option>
+          <option value="hold">Hold position</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="notes">Notes</label>
+      <textarea id="notes" placeholder="Wind from the north, expect gusts above 40 m">Wind from the north, expect gusts above 40 m</textarea>
+    </div>
+
+    <div class="checkRow">
+      <input type="checkbox" id="armOnSave" checked>
+      <label for="armOnSave">Arm on save</label>
+    </div>
+    <div class="checkRow">
+      <input type="checkbox" id="logTelemetry">
+      <label for="logTelemetry">Log full telemetry</label>
+    </div>
+
+    <div class="field">
+      <label for="gain">Descend gain</label>
+      <input type="range" id="gain" min="0" max="100" step="5" value="40">
+    </div>
+
+    <div class="field">
+      <label>Upload progress</label>
+      <progress id="uploadProgress" value="0.62" max="1"></progress>
+    </div>
+
+    <div id="actions">
+      <button type="button" class="btn" id="cancelButton">Cancel</button>
+      <button type="submit" class="btn primary" id="saveButton">Save mission</button>
+    </div>
+  </form>
+</body>
+</html>

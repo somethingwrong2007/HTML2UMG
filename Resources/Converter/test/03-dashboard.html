@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>03 dashboard</title>
+<style>
+  /* Realistic HUD design: the acceptance reference for the converter. */
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #070a0f;
+    font-family: "Segoe UI", "Segoe UI Semibold", sans-serif;
+    color: #d7e3ee;
+  }
+
+  #hud { display: flex; flex-direction: column; height: 100%; }
+
+  /* ---------- header ---------- */
+  #header {
+    display: flex; flex-direction: row; align-items: center;
+    gap: 18px; padding: 14px 26px;
+    background: #0b1017; border-bottom: 1px solid #17222e;
+  }
+  #logo { width: 34px; height: 34px; }
+  #titleBlock { display: flex; flex-direction: column; gap: 2px; }
+  #title { font-size: 20px; font-weight: 700; letter-spacing: 3px; color: #eaf4ff; }
+  #subtitle { font-size: 11px; letter-spacing: 2px; color: #4e6579; text-transform: uppercase; }
+  #headerSpacer { flex: 1; }
+  #linkState {
+    display: flex; flex-direction: row; align-items: center; gap: 10px;
+    padding: 6px 14px; border-radius: 14px;
+    background: #0d1a13; border: 1px solid #1d3a28;
+  }
+  #linkDot { width: 8px; height: 8px; border-radius: 4px; background: #3fb950; }
+  #linkText { font-size: 12px; letter-spacing: 1px; color: #7ee2a8; }
+
+  /* ---------- body ---------- */
+  #body { display: flex; flex-direction: row; gap: 16px; padding: 16px; flex: 1; }
+
+  #leftRail { display: flex; flex-direction: column; gap: 12px; width: 260px; }
+  #centerStage { flex: 1; position: relative; background: #0a0f16; border: 1px solid #16202b; border-radius: 10px; }
+  #rightRail { display: flex; flex-direction: column; gap: 12px; width: 300px; }
+
+  .panel {
+    background: #0c1219; border: 1px solid #17222e; border-radius: 8px;
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .panelTitle { font-size: 11px; letter-spacing: 2px; color: #52697d; text-transform: uppercase; }
+
+  .statRow { display: flex; flex-direction: row; align-items: baseline; gap: 6px; }
+  .statValue { font-size: 26px; font-weight: 700; color: #f2f8ff; }
+  .statUnit { font-size: 12px; color: #5d7387; }
+
+  .barTrack { height: 6px; border-radius: 3px; background: #131c26; }
+  .barFill { height: 6px; border-radius: 3px; background: #2f81f7; }
+  .barFill.warn { background: #d29922; }
+  .barFill.good { background: #3fb950; }
+
+  .row { display: flex; flex-direction: row; gap: 10px; }
+  .row > .panel { flex: 1; }
+
+  /* centre stage: absolutely positioned overlays */
+  #crosshair {
+    position: absolute; left: 50%; top: 50%;
+    width: 64px; height: 64px; margin-left: -32px; margin-top: -32px;
+  }
+  #targetTag {
+    position: absolute; left: 58%; top: 34%;
+    width: 132px; height: 56px;
+    background: rgba(9, 14, 20, 0.86); border: 1px solid #27435c; border-radius: 4px;
+    display: flex; flex-direction: column; justify-content: center; padding: 0 8px; gap: 2px;
+  }
+  #targetTag .label { font-size: 10px; letter-spacing: 1px; color: #5c7c96; }
+  #targetTag .dist { font-size: 15px; color: #cfe6ff; font-weight: 600; }
+  #horizon {
+    position: absolute; left: 8%; right: 8%; top: 46%; height: 1px; background: #1d3346;
+  }
+  #stageFooter {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    background: #0b1119; border-top: 1px solid #16202b;
+    font-size: 11px; letter-spacing: 3px; color: #4a6076;
+  }
+
+  /* grid of telemetry tiles */
+  #tileGrid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+  }
+  .tile {
+    background: #0b1119; border: 1px solid #16202b; border-radius: 6px;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .tile .tk { font-size: 10px; letter-spacing: 1px; color: #4e6579; text-transform: uppercase; }
+  .tile .tv { font-size: 17px; color: #e8f2fb; }
+
+  #thumb {
+    width: 100%; height: 84px; border-radius: 6px;
+    background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAPklEQVR4nGOwObEFKzoR9R8rIlU9w6gFoxYMAQuoZRAu9aMWjFowFCygeUYbtWDUgiFgAc0z2qgFoxYMfgsAifiyakUFOqQAAAAASUVORK5CYII=");
+    background-size: cover;
+    border: 1px solid #1b2733;
+  }
+
+  .warnText { font-size: 11px; color: #d29922; }
+  .mono { font-family: Consolas, monospace; font-size: 12px; color: #8fa7bb; }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <div id="header">
+      <svg id="logo" viewBox="0 0 32 32" width="34" height="34">
+        <circle cx="16" cy="16" r="14" fill="none" stroke="#2f81f7" stroke-width="2"/>
+        <path d="M16 6 L22 20 L16 17 L10 20 Z" fill="#58a6ff"/>
+      </svg>
+      <div id="titleBlock">
+        <div id="title">SKYLINE OSD</div>
+        <div id="subtitle">link &middot; telemetry &middot; nav</div>
+      </div>
+      <div id="headerSpacer"></div>
+      <div id="linkState">
+        <div id="linkDot"></div>
+        <div id="linkText">LINK 98%</div>
+      </div>
+    </div>
+
+    <div id="body">
+      <div id="leftRail">
+        <div class="panel" id="altitudePanel">
+          <div class="panelTitle">Altitude</div>
+          <div class="statRow">
+            <div class="statValue">128</div>
+            <div class="statUnit">m AGL</div>
+          </div>
+          <div class="barTrack"><div class="barFill good" id="altitudeBar"></div></div>
+        </div>
+
+        <div class="panel" id="speedPanel">
+          <div class="panelTitle">Ground speed</div>
+          <div class="statRow">
+            <div class="statValue">74</div>
+            <div class="statUnit">km/h</div>
+          </div>
+          <div class="barTrack"><div class="barFill" id="speedBar"></div></div>
+        </div>
+
+        <div class="panel" id="batteryPanel">
+          <div class="panelTitle">Battery</div>
+          <div class="statRow">
+            <div class="statValue">86</div>
+            <div class="statUnit">% &middot; 11.4 V</div>
+          </div>
+          <div class="barTrack"><div class="barFill warn" id="batteryBar"></div></div>
+          <div class="warnText" id="batteryWarn">Cell 3 lowest &mdash; land soon</div>
+        </div>
+      </div>
+
+      <div id="centerStage">
+        <div id="horizon"></div>
+        <svg id="crosshair" viewBox="0 0 64 64" width="64" height="64">
+          <circle cx="32" cy="32" r="22" fill="none" stroke="#2f81f7" stroke-width="1.5" opacity="0.8"/>
+          <line x1="32" y1="4" x2="32" y2="16" stroke="#58a6ff" stroke-width="1.5"/>
+          <line x1="32" y1="48" x2="32" y2="60" stroke="#58a6ff" stroke-width="1.5"/>
+          <line x1="4" y1="32" x2="16" y2="32" stroke="#58a6ff" stroke-width="1.5"/>
+          <line x1="48" y1="32" x2="60" y2="32" stroke="#58a6ff" stroke-width="1.5"/>
+        </svg>
+        <div id="targetTag">
+          <div class="label">TARGET &middot; RIDGE</div>
+          <div class="dist">412 m</div>
+        </div>
+        <div id="stageFooter">HOLD THROTTLE TO ARM</div>
+      </div>
+
+      <div id="rightRail">
+        <div class="panel" id="navPanel">
+          <div class="panelTitle">Navigation</div>
+          <div class="mono" id="navLine1">WP 03 / 08 &nbsp; 212&deg;</div>
+          <div class="mono" id="navLine2">XTK +2.4 m &nbsp; VSI -0.8</div>
+        </div>
+
+        <div class="panel" id="tilePanel">
+          <div class="panelTitle">Sensors</div>
+          <div id="tileGrid">
+            <div class="tile"><div class="tk">Sats</div><div class="tv">17</div></div>
+            <div class="tile"><div class="tk">HDOP</div><div class="tv">0.8</div></div>
+            <div class="tile"><div class="tk">Temp</div><div class="tv">41&deg;</div></div>
+            <div class="tile"><div class="tk">Gyro</div><div class="tv">0.02</div></div>
+            <div class="tile"><div class="tk">Accel</div><div class="tv">1.01</div></div>
+            <div class="tile"><div class="tk">Baro</div><div class="tv">1007</div></div>
+          </div>
+        </div>
+
+        <div class="panel" id="cameraPanel">
+          <div class="panelTitle">Camera</div>
+          <img id="thumb" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAPklEQVR4nGOwObEFKzoR9R8rIlU9w6gFoxYMAQuoZRAu9aMWjFowFCygeUYbtWDUgiFgAc0z2qgFoxYMfgsAifiyakUFOqQAAAAASUVORK5CYII=" alt="camera preview">
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

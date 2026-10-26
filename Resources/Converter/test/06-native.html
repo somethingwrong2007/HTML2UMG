@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Native controls — Html2UMG bake probe</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; background: #060a10; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #c9d6e4; padding: 56px; }
+
+  .panel {
+    position: absolute; left: 64px; top: 60px; width: 720px;
+    background: #0c131c; border: 1px solid #1f2d3d; border-radius: 14px;
+    padding: 26px 28px;
+  }
+  .panel h2 { font-size: 17px; letter-spacing: 2px; color: #7fb7ff; margin-bottom: 22px; }
+  .field { margin-bottom: 22px; }
+  .field > label {
+    display: block; font-size: 11px; letter-spacing: 1px; color: #8298ad;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+
+  /* native select: dark scheme, custom arrow colour via accent-color */
+  select#mode {
+    width: 100%; height: 44px;
+    background: #131f2b; border: 1px solid #2b4257; border-radius: 9px;
+    color: #dee9f4; font-size: 14px; padding: 0 12px;
+    accent-color: #46b1ff;
+  }
+  select#mode:hover { background: #192938; border-color: #3c5b78; }
+  select#mode:focus { background: #192938; border-color: #4f96d6; }
+  select#mode option { background: #0f1822; color: #dee9f4; }
+  select#mode option:checked { background: #1f6feb; color: #ffffff; }
+
+  /* native checkbox / radio with custom accent */
+  .row { display: flex; flex-direction: row; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+  input#arm { width: 20px; height: 20px; accent-color: #3fbf6a; }
+  input#telemetry { width: 20px; height: 20px; accent-color: #3fbf6a; }
+  input#units { width: 20px; height: 20px; accent-color: #e0a83a; }
+
+  /* native range with custom accent + track */
+  input#gain {
+    width: 100%; height: 8px;
+    accent-color: #46b1ff;
+    background: #16222e; border-radius: 4px;
+  }
+
+  /* native progress */
+  progress#upload {
+    width: 100%; height: 12px;
+    background: #16222e; border-radius: 6px;
+    accent-color: #3fbf6a;
+  }
+
+  /* side column: same controls at a different size to check scaling */
+  .small { position: absolute; left: 860px; top: 60px; width: 420px;
+           background: #0c131c; border: 1px solid #1f2d3d; border-radius: 14px; padding: 22px 24px; }
+  .small h2 { font-size: 15px; letter-spacing: 2px; color: #9ac0e2; margin-bottom: 18px; }
+  .small select#mode2 {
+    width: 100%; height: 34px; background: #131f2b; border: 1px solid #2b4257;
+    border-radius: 7px; color: #dee9f4; font-size: 12px; padding: 0 10px; accent-color: #46b1ff;
+  }
+  .small input#gain2 { width: 100%; height: 6px; accent-color: #e0a83a; background: #16222e; border-radius: 3px; }
+  .small progress#upload2 { width: 100%; height: 9px; background: #16222e; border-radius: 5px; accent-color: #e0a83a; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <h2>NATIVE CONTROL SURFACE</h2>
+
+    <div class="field">
+      <label>Flight mode</label>
+      <select id="mode">
+        <option>Stabilize</option>
+        <option selected>Altitude hold</option>
+        <option>Return to launch</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Switches</label>
+      <div class="row"><input type="checkbox" id="arm" checked> Arm on save</div>
+      <div class="row"><input type="checkbox" id="telemetry"> Log telemetry</div>
+      <div class="row"><input type="radio" id="units" checked> Metric units</div>
+    </div>
+
+    <div class="field">
+      <label>Control gain</label>
+      <input type="range" id="gain" min="0" max="100" value="62">
+    </div>
+
+    <div class="field">
+      <label>Upload</label>
+      <progress id="upload" value="62" max="100"></progress>
+    </div>
+  </div>
+
+  <div class="small">
+    <h2>SCALED VARIANT</h2>
+    <div class="field">
+      <label>Mode</label>
+      <select id="mode2">
+        <option selected>Altitude hold</option>
+        <option>Manual</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Gain</label>
+      <input type="range" id="gain2" min="0" max="100" value="35">
+    </div>
+    <div class="field">
+      <label>Upload</label>
+      <progress id="upload2" value="35" max="100"></progress>
+    </div>
+  </div>
+</body>
+</html>

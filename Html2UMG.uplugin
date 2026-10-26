@@ -1,0 +1,28 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "HTML to UMG",
+	"Description": "Converts HTML/CSS designs into native UMG Widget Blueprints. Node + your installed Chromium computes the layout; the editor module rebuilds a Widget Blueprint from the resulting JSON contract.",
+	"Category": "Editor",
+	"CreatedBy": "FPVSkyline",
+	"CreatedByURL": "",
+	"DocsURL": "../../Docs/Html2UMG_LayoutContract.md",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "Html2UMG",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64"
+			]
+		}
+	],
+	"Plugins": []
+}
