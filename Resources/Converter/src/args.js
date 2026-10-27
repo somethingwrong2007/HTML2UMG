@@ -21,7 +21,39 @@ Options:
   --bake / --no-bake        Bake native control pixels (select arrow, checkbox tick,
                             slider thumb, progress fill) into textures (default: on)
   --bake-scale <n>          Rasterisation scale for baked textures (default 2, max 4)
+  --pin-flow                Pin each vertical-flow leaf to its measured height. Long document-style
+                            pages drift less (a 7081px page: 7.97% -> 4.81% with every child pinned),
+                            but form/flex screens measure worse, so it is off by default.
   --bake-max <px>           Max edge of a single baked texture (default 2048)
+  --line-height-model <m>   per-font (default): LineHeightPercentage is computed from each font's
+                            own file metrics (hhea for Slate, OS/2 + hhea gap for Chromium).
+                            legacy: the old single global constant, for A/B-ing a page.
+  --line-box-snap <m>       font (default) = Chromium's own number: ascent/descent/lineGap each
+                            rounded to a whole pixel and added. exact keeps the fractional sum;
+                            half / int round the *sum* to 0.5 / 1 px (A/B knobs).
+  --text-shadow <m>         zero (default): TextBlocks get ShadowOffset [0,0] when the design has
+                            no text-shadow, so the line box is the font's own metric.
+                            default: keep UMG's (1,1) and count its extra pixel in the line box.
+  --ttc-subfaces /          Import TrueType collections (.ttc/.otc) through their sub-face
+    --no-ttc-subfaces       index instead of skipping them (default: on; UE 5.8 supports it).
+  --wrap-tolerance <px>     Add this many px to an emitted WrapTextAt so a font that measures a
+                            hair wider than the browser still fits on the same line (default 0).
+  --aspects <list>          Emit one WBP variant per breakpoint, each measured at its own viewport:
+                            21:9,16:9,4:3 (height from --viewport) or 2560x1080,1920x1080.
+                            Assets stay in ONE directory with globally unique keys.
+  --layout <mode>           exact (default): the design is baked at --viewport.
+                            responsive: no baked WrapTextAt (text wraps at run time), percentage/
+                            flex widths kept, single-child centre becomes an Overlay.
+  --cjk-breaks <m>          policy (default): tell Slate to apply its own CJK break policy.
+                            none: no break opportunities are requested for CJK runs.
+  --font-policy <mode>      any (default): embed whatever the design asks for.
+                            redistributable: refuse proprietary font files and switch to
+                            OFL candidates (Noto Sans SC / Source Han) instead.
+                            engine: embed ONLY redistributable faces; everything else keeps no
+                            font asset and uses the UMG default font (no CJK sub-fonts either).
+  --font-map <mode>         ignore (default): drop data-ue-font-map, so a design never points at
+                            the authoring project's own font assets (licensing / portability).
+                            keep: honour the map, as before.
   --strict                  Exit 2 when the conversion produced warnings
   -q, --quiet               Only print the summary line on stdout
   --dump-snapshot <file>    Write the raw DOM snapshot(s) to <file> for debugging
@@ -71,7 +103,18 @@ function parseArgs(argv) {
     scaleBox: null,
     bake: true,
     bakeScale: 2,
+    pinFlowHeights: false,
     bakeMax: 2048,
+    lineHeightModel: 'per-font',
+    textShadow: 'zero',
+    lineBoxSnap: 'exact',
+    layout: 'exact',
+    aspects: null,
+    fontPolicy: 'any',
+    fontMap: 'ignore',
+    ttcSubfaces: true,
+    wrapTolerance: null,
+    cjkBreaks: 'policy',
     strict: false,
     quiet: false,
     dumpSnapshot: null,
@@ -131,6 +174,71 @@ function parseArgs(argv) {
       const value = parseInt(takeValue(), 10);
       if (!Number.isFinite(value) || value < 64) throw new ArgError('--bake-max: expected pixels >= 64');
       opts.bakeMax = value;
+    } else if (arg === '--line-box-snap' || arg.startsWith('--line-box-snap=')) {
+      const inline = arg.startsWith('--line-box-snap=') ? arg.slice('--line-box-snap='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'font' && mode !== 'exact' && mode !== 'half' && mode !== 'int') {
+        throw new ArgError('--line-box-snap: expected font|exact|half|int, got "' + mode + '"');
+      }
+      opts.lineBoxSnap = mode;
+    } else if (arg === '--pin-flow') {
+      opts.pinFlowHeights = true;
+    } else if (arg === '--line-height-model' || arg.startsWith('--line-height-model=')) {
+      const inline = arg.startsWith('--line-height-model=') ? arg.slice('--line-height-model='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'per-font' && mode !== 'legacy') {
+        throw new ArgError('--line-height-model: expected per-font|legacy, got "' + mode + '"');
+      }
+      opts.lineHeightModel = mode;
+    } else if (arg === '--text-shadow' || arg.startsWith('--text-shadow=')) {
+      const inline = arg.startsWith('--text-shadow=') ? arg.slice('--text-shadow='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'zero' && mode !== 'default') {
+        throw new ArgError('--text-shadow: expected zero|default, got "' + mode + '"');
+      }
+      opts.textShadow = mode;
+    } else if (arg === '--ttc-subfaces') {
+      opts.ttcSubfaces = true;
+    } else if (arg === '--no-ttc-subfaces') {
+      opts.ttcSubfaces = false;
+    } else if (arg === '--wrap-tolerance' || arg.startsWith('--wrap-tolerance=')) {
+      const inline = arg.startsWith('--wrap-tolerance=') ? arg.slice('--wrap-tolerance='.length) : null;
+      const value = parseFloat(inline === null ? takeValue() : inline);
+      if (!Number.isFinite(value) || value < -32 || value > 32) {
+        throw new ArgError('--wrap-tolerance: expected a number of px between -32 and 32');
+      }
+      opts.wrapTolerance = value;
+    } else if (arg === '--cjk-breaks' || arg.startsWith('--cjk-breaks=')) {
+      const inline = arg.startsWith('--cjk-breaks=') ? arg.slice('--cjk-breaks='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'policy' && mode !== 'none' && mode !== 'off') {
+        throw new ArgError('--cjk-breaks: expected policy|none, got "' + mode + '"');
+      }
+      opts.cjkBreaks = mode === 'policy' ? 'policy' : 'none';
+    } else if (arg === '--font-policy' || arg.startsWith('--font-policy=')) {
+      const inline = arg.startsWith('--font-policy=') ? arg.slice('--font-policy='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'any' && mode !== 'redistributable' && mode !== 'engine') {
+        throw new ArgError('--font-policy: expected any|redistributable|engine, got "' + mode + '"');
+      }
+      opts.fontPolicy = mode;
+    } else if (arg === '--layout' || arg.startsWith('--layout=')) {
+      const inline = arg.startsWith('--layout=') ? arg.slice('--layout='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'exact' && mode !== 'responsive') {
+        throw new ArgError('--layout: expected exact|responsive, got "' + mode + '"');
+      }
+      opts.layout = mode;
+    } else if (arg === '--aspects' || arg.startsWith('--aspects=')) {
+      const inline = arg.startsWith('--aspects=') ? arg.slice('--aspects='.length) : null;
+      opts.aspects = String(inline === null ? takeValue() : inline).trim();
+    } else if (arg === '--font-map' || arg.startsWith('--font-map=')) {
+      const inline = arg.startsWith('--font-map=') ? arg.slice('--font-map='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'ignore' && mode !== 'keep') {
+        throw new ArgError('--font-map: expected ignore|keep, got "' + mode + '"');
+      }
+      opts.fontMap = mode;
     } else if (arg === '--strict') {
       opts.strict = true;
     } else if (arg === '-q' || arg === '--quiet') {

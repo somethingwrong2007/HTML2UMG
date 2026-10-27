@@ -1186,6 +1186,98 @@ function snapshotExpression(options) {
   return `(${pageSnapshot.toString()})(${JSON.stringify(opts)})`;
 }
 
+
+/**
+ * Ask Chromium which fonts it ACTUALLY used for every element that owns text.
+ *
+ * The browser substitutes a system CJK face silently when the CSS stack has no glyph
+ * for a codepoint, which is exactly the layer the converter could not see: the DOM
+ * snapshot only knows the requested `font-family`, never the resolved face. One
+ * CSS.getPlatformFontsForNode per text element closes that gap, and the result is
+ * attached to the record as `platformFonts: [{family, glyphs, custom}]` so it also
+ * shows up in --dump-snapshot.
+ *
+ * The element is looked up by the `data-h2u-idx` attribute the snapshot pass wrote,
+ * so no object handles have to be kept alive between round trips.
+ */
+async function collectPlatformFonts(session, snapshot, options) {
+  const opts = options || {};
+  const warn = opts.warn || (() => {});
+  const maxNodes = opts.maxNodes || 1500;
+  const concurrency = Math.max(1, Math.min(8, opts.concurrency || 6));
+  const stats = { nodes: 0, queried: 0, failed: 0, skipped: 0, families: [] };
+  if (!snapshot || !Array.isArray(snapshot.elements)) return stats;
+
+  let targets = snapshot.elements.filter(
+    (rec) => rec && rec.i !== undefined && typeof rec.text === 'string' && rec.text.trim().length > 0
+  );
+  stats.nodes = targets.length;
+  if (!targets.length) return stats;
+  if (targets.length > maxNodes) {
+    stats.skipped = targets.length - maxNodes;
+    warn(`fonts: only the first ${maxNodes} of ${targets.length} text element(s) were probed for platform fonts`);
+    targets = targets.slice(0, maxNodes);
+  }
+
+  try {
+    await session.send('DOM.enable');
+    await session.send('CSS.enable');
+  } catch (err) {
+    warn(`fonts: the CSS/DOM domains are unavailable (${err.message}); platform font data skipped`);
+    return stats;
+  }
+  const doc = await session.send('DOM.getDocument', { depth: 0 }).catch(() => null);
+  const rootNodeId = doc && doc.root ? doc.root.nodeId : 0;
+  if (!rootNodeId) {
+    warn('fonts: DOM.getDocument returned no root; platform font data skipped');
+    return stats;
+  }
+
+  const familyGlyphs = new Map();
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= targets.length) return;
+      const rec = targets[index];
+      try {
+        const found = await session.send('DOM.querySelector', {
+          nodeId: rootNodeId,
+          selector: `[data-h2u-idx="${rec.i}"]`,
+        });
+        if (!found || !found.nodeId) {
+          stats.failed += 1;
+          continue; // detached node, or one the snapshot synthesised
+        }
+        const result = await session.send('CSS.getPlatformFontsForNode', { nodeId: found.nodeId });
+        const fonts = ((result && result.fonts) || []).filter((font) => (font.glyphCount || 0) > 0);
+        if (!fonts.length) {
+          stats.failed += 1;
+          continue;
+        }
+        rec.platformFonts = fonts.map((font) => ({
+          family: String(font.familyName || ''),
+          glyphs: font.glyphCount || 0,
+          custom: !!font.isCustomFont,
+        }));
+        stats.queried += 1;
+        for (const font of rec.platformFonts) {
+          const key = font.family;
+          familyGlyphs.set(key, (familyGlyphs.get(key) || 0) + font.glyphs);
+        }
+      } catch (err) {
+        stats.failed += 1;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, worker));
+  stats.families = Array.from(familyGlyphs.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([family, glyphs]) => ({ family, glyphs }));
+  return stats;
+}
+
 /** One round trip: returns the flattened snapshot object. */
 async function captureSnapshot(session, options) {
   const opts = options || {};
@@ -1210,6 +1302,7 @@ module.exports = {
   captureSnapshot,
   stabilize,
   expandPartials,
+  collectPlatformFonts,
   indexSnapshot,
   STABILIZE_SOURCE,
   EXPAND_PARTIALS_SOURCE,

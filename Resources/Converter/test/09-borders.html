@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>09 borders</title>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: #0f1419; }
+  body { font-family: "Segoe UI", sans-serif; color: #dbe6f0; }
+  .cell { position: absolute; width: 220px; height: 110px; background: #182430; }
+  .cap { position: absolute; font-size: 11px; color: #7d8b99; }
+
+  /* radius only */
+  #r8  { left: 40px;  top: 40px;  border-radius: 8px; }
+  #r16 { left: 300px; top: 40px;  border-radius: 16px; }
+  /* pill */
+  #pill{ left: 560px; top: 40px;  border-radius: 55px; }
+  /* radius + 1px border */
+  #rb1 { left: 820px; top: 40px;  border-radius: 12px; border: 1px solid #3a5872; }
+  /* radius + thick border */
+  #rb4 { left: 40px;  top: 200px; border-radius: 12px; border: 4px solid #3fa9f5; }
+  /* thin border, no radius */
+  #b1  { left: 300px; top: 200px; border: 1px solid #3a5872; }
+  /* thick border, no radius */
+  #b6  { left: 560px; top: 200px; border: 6px solid #d29922; }
+  /* per-side width: left only */
+  #left3 { left: 820px; top: 200px; border-left: 3px solid #d29922; }
+  /* per-side width: bottom only */
+  #bottom2 { left: 40px; top: 360px; border-bottom: 2px solid #3fb950; }
+  /* per-side colours, same width */
+  #rainbow { left: 300px; top: 360px;
+             border: 2px solid; border-color: #ff5c5c #3fb950 #3fa9f5 #d29922; }
+  /* per-corner radii */
+  #corners { left: 560px; top: 360px;
+             border-radius: 30px 0 30px 0; border: 2px solid #3a5872; }
+  /* radius + gradient */
+  #grad { left: 820px; top: 360px; border-radius: 14px;
+          background: linear-gradient(135deg, #1f6feb, #7b2bd6); }
+  /* radius + shadow */
+  #shad { left: 40px; top: 520px; border-radius: 14px; background: #182430;
+          box-shadow: 0 10px 24px rgba(0,0,0,.7); }
+  /* dashed border */
+  #dash { left: 300px; top: 520px; border: 2px dashed #3a5872; }
+  /* double border */
+  #dbl { left: 560px; top: 520px; border: 6px double #3a5872; }
+  /* border with transparent background */
+  #nobg{ left: 820px; top: 520px; border-radius: 10px; background: transparent;
+         border: 2px solid #3fa9f5; }
+  /* nested rounded boxes (tests the double-frame report) */
+  #outer { left: 40px; top: 680px; width: 480px; height: 160px; border-radius: 16px;
+           background: #182430; border: 1px solid #3a5872; padding: 20px; }
+  #inner { width: 180px; height: 80px; border-radius: 8px; background: #101a24;
+           border: 1px solid #3a5872; }
+</style>
+</head>
+<body>
+  <div class="cell" id="r8"></div>   <div class="cap" style="left:40px;top:158px">r8</div>
+  <div class="cell" id="r16"></div>  <div class="cap" style="left:300px;top:158px">r16</div>
+  <div class="cell" id="pill"></div> <div class="cap" style="left:560px;top:158px">pill</div>
+  <div class="cell" id="rb1"></div>  <div class="cap" style="left:820px;top:158px">r12+b1</div>
+  <div class="cell" id="rb4"></div>  <div class="cap" style="left:40px;top:318px">r12+b4</div>
+  <div class="cell" id="b1"></div>   <div class="cap" style="left:300px;top:318px">b1</div>
+  <div class="cell" id="b6"></div>   <div class="cap" style="left:560px;top:318px">b6</div>
+  <div class="cell" id="left3"></div><div class="cap" style="left:820px;top:318px">left3</div>
+  <div class="cell" id="bottom2"></div><div class="cap" style="left:40px;top:478px">bottom2</div>
+  <div class="cell" id="rainbow"></div><div class="cap" style="left:300px;top:478px">4 colours</div>
+  <div class="cell" id="corners"></div><div class="cap" style="left:560px;top:478px">corners</div>
+  <div class="cell" id="grad"></div> <div class="cap" style="left:820px;top:478px">grad+radius</div>
+  <div class="cell" id="shad"></div> <div class="cap" style="left:40px;top:638px">shadow</div>
+  <div class="cell" id="dash"></div> <div class="cap" style="left:300px;top:638px">dashed</div>
+  <div class="cell" id="dbl"></div>  <div class="cap" style="left:560px;top:638px">double</div>
+  <div class="cell" id="nobg"></div> <div class="cap" style="left:820px;top:638px">transparent bg</div>
+  <div id="outer"><div id="inner"></div></div>
+</body>
+</html>

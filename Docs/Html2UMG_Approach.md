@@ -88,6 +88,28 @@ design.html ──[Node + 本机 Chromium/CDP]──> layout.json ──[UE Edit
 5. **原地重建**：重复导入时控件的名字保持稳定，蓝图图表与 `BindWidget` 继续有效——只覆盖布局。
 6. **可度量**：插件自带把 WBP 渲染成 PNG 的能力，可以和浏览器截图做像素对拍（`Resources/Tools/pngdiff.py`），不靠"看起来差不多"。
 
+## 字体回退：复合字体怎么造
+
+浏览器里"这段中文用哪个字体渲染"是浏览器替我们决定的；UMG 里必须由导入的资产自己回答，否则缺字就是豆腐块。
+所以导入的每个字体家族资产（`UFont`，`FontCacheType=Runtime`）都造成**复合字体**：
+
+- `DefaultTypeface`：设计稿 `font-family` 命中的那个文件（拉丁字体通常只含拉丁字形）。
+- `SubTypefaces`：每个 `assets.fonts[].fallbacks[]` 一项，`FCompositeSubFont` 带 CJK 区间表；同一个
+  `FFontData` 注册成 `Regular / Bold / Italic / BoldItalic` 五个名字（含 `NAME_None`）——回退文件通常只有一个
+  常规字重，名字补齐后"粗体中文"才拿得到字形，否则 Slate 会退回主字体继续豆腐。
+- `Cultures` 故意留空：填 `zh-Hans` 会让非中文文化下的文本忽略这个子字体（引擎自带的 DroidSansFallback 就是这么写的，
+  但它只在编辑器里注册）。
+- `FallbackTypeface`：镜像第一个回退字体。Slate 走到这条路径时**不校验字形覆盖**，是所有区间之外的最后一手。
+
+区间表（`FInt32Range` 是**半开区间**，上界写在最后一个码点之后）：CJK 部首补充 2E80-2FDF、表意描述符 2FF0、
+CJK 符号与标点 3000-303F、假名 3040-30FF、注音 3100、训读 3190、CJK 笔画 31C0-31EF、带圈字 3200-32FF、
+CJK 兼容 3300-33FF、扩展 A 3400-4DBF、基本区 4E00-9FFF、兼容表意 F900-FAFF、竖排 FE10、兼容形式 FE30-FE4F、
+半角全角 FF00-FFEF、补充平面 20000-2FA1F。
+
+多面字体文件（`.ttc/.otc`，例如 `msyh.ttc` = Microsoft YaHei + Microsoft YaHei UI，`msyhbd.ttc` = 对应粗体）
+导入成**一个** `UFontFace`，面靠 `FFontData(FaceAsset, SubFaceIndex)` 选：布局给了 `subface` 就用它（转换器按 cmap
+校验过），否则按面样式字符串匹配字重/斜体，最后缺省 0，并在日志里写明用了哪个来源和该文件的全部面名。
+
 ## 明确不做的事
 
 | 不做 | 原因 / 替代 |

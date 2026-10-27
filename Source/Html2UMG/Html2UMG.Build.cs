@@ -23,6 +23,9 @@ public class Html2UMG : ModuleRules
 				"Slate",
 				"SlateCore",
 				"UMG",
+				// Runtime half of the plugin (H2URelativeBox): the importer resolves its classes by
+				// name, but linking against it keeps the module loaded and its UPROPERTYs usable.
+				"Html2UMGRuntime",
 				"UMGEditor",
 				"UnrealEd",
 				"EditorFramework",

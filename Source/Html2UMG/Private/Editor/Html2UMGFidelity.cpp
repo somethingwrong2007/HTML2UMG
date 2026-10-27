@@ -453,6 +453,8 @@ namespace
 
 		FH2UImportResult Result;
 		const bool bImported = FHtml2UMGImporter::ImportLayoutFile(JsonFile, Options, Result);
+		// Say WHY it failed before the one-line summary: a bare "1 error(s)" is not debuggable.
+		FHtml2UMGImporter::LogImportMessages(Result);
 		UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.ImportRenderGeometry: import %s (%d created, %d error(s))"),
 			bImported ? TEXT("SUCCESS") : TEXT("FAILED"), Result.WidgetsCreated, Result.ErrorCount());
 		if (!bImported)

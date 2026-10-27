@@ -170,6 +170,30 @@ void FHtml2UMGImporter::SetMessageSink(TFunction<void(const FH2UMessage&)> InSin
 	GMessageSink = MoveTemp(InSink);
 }
 
+int32 FHtml2UMGImporter::LogImportMessages(const FH2UImportResult& Result)
+{
+	int32 Written = 0;
+	for (const FH2UMessage& Message : Result.Messages)
+	{
+		if (Message.Severity.Equals(TEXT("error"), ESearchCase::IgnoreCase))
+		{
+			UE_LOG(LogHtml2UMG, Error, TEXT("Html2UMG [error] %s"), *Message.Text);
+		}
+		else if (Message.Severity.Equals(TEXT("warning"), ESearchCase::IgnoreCase))
+		{
+			UE_LOG(LogHtml2UMG, Warning, TEXT("Html2UMG [warning] %s"), *Message.Text);
+		}
+		else
+		{
+			// Info is numerous and noisy; keep it out of the default log.
+			UE_LOG(LogHtml2UMG, Verbose, TEXT("Html2UMG [info] %s"), *Message.Text);
+			continue;
+		}
+		++Written;
+	}
+	return Written;
+}
+
 bool FHtml2UMGImporter::ImportLayout(const FH2ULayout& Layout, const FH2UImportOptions& Options, FH2UImportResult& OutResult)
 {
 	OutResult = FH2UImportResult();

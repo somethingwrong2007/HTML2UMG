@@ -324,6 +324,80 @@ async function queryNodeId(session, rootNodeId, selector) {
 
 // ------------------------------------------------------------------- baking
 /**
+ * True when the element's border cannot be expressed by a single Slate outline.
+ *
+ * FSlateBrush carries ONE outline width and ONE colour, so a border that differs per side
+ * (only a left rule, a 3px left + 1px elsewhere, four colours) or that uses a non-solid style
+ * (dashed / dotted / double) has no faithful brush form. Those elements get their whole box -
+ * background, border and radius - rasterised instead.
+ */
+/**
+ * True when the element's border cannot be expressed by a single Slate outline at all.
+ *
+ * FSlateBrush carries ONE outline width and ONE colour, so a border that differs per side is
+ * approximated instead (widest side wins, the rest is padded back - that keeps the geometry and
+ * measured close). A non-solid style is different: dashed / dotted / double have NO approximation,
+ * they would render as a solid line, so those boxes are rasterised instead.
+ *
+ * Baking every unequal border was tried and rejected: on a page built from full-bleed frames it
+ * turned a 0.57% page into 22.47%, because each capture also picks up whatever sits behind the
+ * element.
+ */
+function borderNeedsPaint(rec) {
+  const cs = rec.cs || {};
+  if (!cs) return false;
+  const px = (value) => {
+    const match = /-?[\d.]+/.exec(String(value || '0'));
+    return match ? Number(match[0]) : 0;
+  };
+  const widths = [cs.borderLeftWidth, cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth].map(px);
+  if (!widths.some((value) => value > 0)) return false;
+  const styles = [cs.borderLeftStyle, cs.borderTopStyle, cs.borderRightStyle, cs.borderBottomStyle];
+  if (styles.some((style) => style && style !== 'none' && style !== 'solid')) return true;
+
+  // Unequal sides or four different colours: the outline cannot say it, and the padding-collapse
+  // approximation leaves the border drawn on the wrong edges. Bake it - but only for a box of
+  // reasonable size. A large capture also picks up whatever is behind the element, which is why
+  // baking every such border unconditionally wrecked the frame-heavy test page.
+  const rect = rec.rect || [0, 0, 0, 0];
+  if (!(rect[2] >= 1) || !(rect[3] >= 1)) return false;
+  // A capture only stands on its own when the element is opaque: then the texture contains just
+  // the element (background + border) and can be dropped onto whatever is behind it. A
+  // transparent element would bake its surroundings into the texture instead, which is what
+  // wrecked the frame-heavy test page when every unequal border was baked unconditionally.
+  // A small element is kept as a second chance, since its footprint is barely visible either way.
+  const opaque = isOpaqueBackground(cs.backgroundColor);
+  if (!opaque) return false;
+  const longEdge = Math.max(rect[2], rect[3]);
+  if (longEdge > 2048) return false;
+  // How wide a box may be before the capture is not worth it. A wide bar WITH children measures
+  // worse when baked, because the texture replaces a brush that also carried the collapsed-outline
+  // padding compensation and its text ends up a pixel off across the whole width. A wide box with
+  // no children has nothing to shift, and baking it is a straight win (a 1920x3 frame line, say).
+  // The capture is only trusted up to the bake-max edge; beyond that the texture would be
+  // downscaled and the border would blur.
+  if (longEdge > 2048) return false;
+
+  const uniformWidth = widths.every((value) => Math.abs(value - widths[0]) < 0.01);
+  const colours = [cs.borderLeftColor, cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor];
+  const uniformColour = colours.every((colour) => colour === colours[0]);
+  return !uniformWidth || !uniformColour;
+}
+
+/** True when a CSS colour fills its box completely (no alpha channel, or alpha 1). */
+function isOpaqueBackground(value) {
+  const text = String(value || '').trim();
+  if (!text || text === 'transparent' || text === 'rgba(0, 0, 0, 0)') return false;
+  const match = /^rgba\(([^)]+)\)$/.exec(text);
+  if (match) {
+    const parts = match[1].split(',');
+    const alpha = Number(parts[3]);
+    return Number.isFinite(alpha) ? alpha >= 0.99 : true;
+  }
+  return true;
+}
+
+/**
  * A gradient background is a paint Slate has no model for: FSlateBrush can only
  * fill a shape with a single tint or an image. Rather than approximate a
  * linear-gradient with one flat colour (the old behaviour), the element's own
@@ -352,6 +426,7 @@ function bakeTarget(rec) {
   // so it subsumes a gradient paint on the same element.
   if (shadowOf(rec)) return 'shadow';
   if (gradientPaintOf(rec)) return 'paint';
+  if (borderNeedsPaint(rec)) return 'paint';
   return null;
 }
 

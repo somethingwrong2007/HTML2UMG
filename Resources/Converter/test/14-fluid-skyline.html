@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Html2UMG fluid fixture (14-fluid-skyline) — 定宽稿的流式改写</title>
+<style>
+  /* 14-fluid-skyline: E:/figma/umg/skyline-settings.html 的流式版。
+     视觉在 1920×1080 下与原稿一致；但布局不再写死 1920×1080：
+       · 根：width/height:100%（原来写死 1920x1080）
+       · 面板：width:92% + max-width:1240px（原来 width:1240px）
+       · 椭：body 改为 flex-direction:column + align-items:center
+             —— 水平居中走【交叉轴对齐】（连续），而不是 flex 行的 justify-content:center（会烘焙 px）
+       · 右内容区：flex:1 1 auto + min-width:0
+       · 行内数值列：width:41% + max-width:380px（= min(380px, 41%)，主轴百分比 + 上限钳制）
+     逐条对照见 Docs/Html2UMG_ResponsiveContract.md 第 6 节。 */
+  /* ---- tokens ---- */
+  :root{
+    --ink:#0D1A21; --ink-2:#41565F; --ink-3:#7B8F99; --ink-4:#A4B4BC;
+    --line:rgba(13,26,33,.13); --line-2:rgba(13,26,33,.22);
+    --accent:#17809B; --accent-d:#0F6377;
+    --mono:"Cascadia Mono","Consolas",monospace;
+    --sans:"Noto Sans SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  /* 1) 根不再写死 1920x1080 */
+  html,body{margin:0;padding:0;width:100%;height:100%}
+  body{
+    /* 2) 竖向 flex + 交叉轴居中：水平居中是连续的（Box 槽交叉轴有富余） */
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:#EDF1EE; color:var(--ink);
+    font-family:var(--sans);
+  }
+  /* ---- panel ---- */
+  #panel{
+    /* 3) 92% 且不超 1240：浏览器里 min(1240px, 92vw)；UMG 里退化为 1240 钉宽（见文档第 6 节） */
+    width:92%; max-width:1240px; min-width:0;
+    display:flex; flex-direction:column;
+    background:rgba(255,255,255,.92);
+    border:1px solid var(--line-2);
+    border-radius:10px;
+    backdrop-filter:blur(12px);
+    overflow:hidden;
+  }
+  #header{display:flex; flex-direction:column; gap:6px; padding:30px 36px 22px 36px}
+  #title{font-size:26px; font-weight:700; line-height:34px; color:var(--ink)}
+  #subtitle{font-family:var(--mono); font-size:11px; letter-spacing:1.2px; color:var(--ink-3); line-height:15px}
+  .rule{height:1px; background:var(--line)}
+  /* ---- body ---- */
+  #body{display:flex; flex-direction:row; flex:1 1 auto; min-height:0}
+  #nav{flex:0 0 232px; min-width:232px; max-width:232px;
+       display:flex; flex-direction:column; padding:18px 14px; gap:2px}
+  .nav-item{display:flex; flex-direction:row; align-items:center; gap:10px; height:38px;
+            padding:0 12px; border-radius:4px; font-size:14px; color:var(--ink-2)}
+  .nav-item.on{background:rgba(23,128,155,.12); color:var(--accent-d); font-weight:500}
+  .nav-idx{width:16px; font-family:var(--mono); font-size:10px; color:var(--ink-4)}
+  .nav-item.on .nav-idx{color:var(--accent-d)}
+  #vrule{flex:0 0 1px; width:1px; background:var(--line)}
+  #content{flex:1 1 auto; min-width:0; display:flex; flex-direction:column; padding:6px 36px 0 32px}
+  /* ---- rows ---- */
+  .row{display:flex; flex-direction:row; align-items:center; gap:24px; height:76px}
+  .row-k{flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px}
+  .row-k b{font-size:15px; font-weight:500; color:var(--ink); line-height:22px}
+  .row-k span{font-size:12px; color:var(--ink-3); line-height:17px}
+  /* 4) 数值列：主轴百分比 + 上限钳制 = CSS 里的 min(380px, 41%)，跨宽度连续 */
+  .row-v{width:41%; max-width:380px; min-width:0;
+         display:flex; flex-direction:row; align-items:center; gap:14px; justify-content:flex-end}
+  /* ---- buttons ---- */
+  button{font-family:var(--sans); font-size:14px; cursor:pointer; border-radius:4px}
+  #btn-apply{width:150px; height:44px; background:var(--accent); color:#FFFFFF; border:1px solid var(--accent-d)}
+  #btn-apply:hover{background:#15728A}
+  #btn-apply:active{background:var(--accent-d)}
+  #btn-apply:disabled{background:#DCE6E0; border-color:#C6D2CC; color:#8A9A92}
+  #btn-cancel{width:130px; height:44px; background:#FFFFFF; color:var(--ink); border:1px solid var(--line-2)}
+  #btn-cancel:hover{background:#F2F6F4}
+  #btn-cancel:active{background:#E4EBE7}
+  #btn-cancel:disabled{background:#EFF3F1; border-color:#DBE3DF; color:#A4B4BC}
+  #btn-reset{width:130px; height:44px; background:rgba(255,255,255,0); color:var(--ink-2); border:1px solid var(--line)}
+  #btn-reset:hover{color:var(--ink); border-color:var(--line-2)}
+  #btn-reset:active{background:#E9EFEC}
+  #btn-reset:disabled{color:#B7C2BB; border-color:#E1E8E4}
+  #footer{display:flex; flex-direction:row; align-items:center; justify-content:flex-end; gap:12px;
+          padding:22px 36px 28px 36px}
+  #footer-hint{flex:1 1 auto; min-width:0; font-family:var(--mono); font-size:10px; letter-spacing:1px; color:var(--ink-4)}
+  /* ---- slider ---- */
+  input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:22px; background:transparent; margin:0}
+  input[type=range]::-webkit-slider-runnable-track{height:2px; background:rgba(13,26,33,.18); border-radius:1px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; appearance:none;
+    width:9px; height:20px; margin-top:-9px; background:#FFFFFF;
+    border:1px solid var(--accent); border-radius:2px}
+  /* ---- checkbox ---- */
+  input[type=checkbox]{-webkit-appearance:none; appearance:none; margin:0;
+    width:17px; height:17px; background:#FFFFFF; border:1px solid var(--line-2); border-radius:3px}
+  input[type=checkbox]:checked{background:var(--accent); border-color:var(--accent-d);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 13 13'%3E%3Cpath d='M2.5 6.8 L5 9.3 L10.5 3.4' fill='none' stroke='%23FFFFFF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:center}
+  input[type=checkbox]:disabled{background:#EFF3F1; border-color:var(--line)}
+  /* ---- switch (styled checkbox) ---- */
+  input[type=checkbox].switch{
+    width:42px; height:22px; border-radius:11px; border:1px solid var(--line-2);
+    background-color:#E2E9E5; background-repeat:no-repeat; background-position:3px 3px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23FFFFFF' stroke='%23C3CFC9' stroke-width='1'/%3E%3C/svg%3E")}
+  input[type=checkbox].switch:checked{
+    background-color:var(--accent); border-color:var(--accent-d);
+    background-position:23px 3px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23FFFFFF'/%3E%3C/svg%3E")}
+  /* ---- combobox (self-drawn, forced to ComboBoxString) ---- */
+  .combo{display:flex; flex-direction:row; align-items:center; justify-content:space-between;
+    width:100%; height:38px; padding:0 12px; background:#FFFFFF;
+    border:1px solid var(--line-2); border-radius:4px; font-size:13px; color:var(--ink)}
+  .combo-arrow{width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent;
+    border-top:5px solid var(--ink-3)}
+  .combo-list{background:#FFFFFF; border:1px solid var(--line-2); border-radius:4px; overflow:hidden}
+  .combo-list .item{height:30px; line-height:30px; padding:0 10px; font-size:13px; color:var(--ink-2)}
+  .combo-list .item:hover{background:rgba(23,128,155,.10); color:var(--accent-d)}
+  .combo-list .item.selected{background:rgba(23,128,155,.14); color:var(--accent-d); font-weight:500}
+  /* ---- progress ---- */
+  progress{-webkit-appearance:none; appearance:none; width:100%; height:6px; border:none; background:transparent}
+  progress::-webkit-progress-bar{background:rgba(13,26,33,.10); border-radius:3px}
+  progress::-webkit-progress-value{background:var(--accent); border-radius:3px}
+  /* ---- value text ---- */
+  .val{width:52px; text-align:right; font-family:var(--mono); font-size:13px; line-height:15px; color:var(--ink)}
+  .unit{font-family:var(--mono); font-size:10px; line-height:15px; color:var(--ink-3)}
+</style>
+</head>
+<body data-ue-blueprint="/Game/MenuSystem/Skyline/WBP_Settings"
+      data-ue-font-map='{"Cascadia Mono":"/Game/MenuSystem/HUD_Elements/Font/UAV-OSD-Mono_Font.UAV-OSD-Mono_Font","Consolas":"/Game/MenuSystem/HUD_Elements/Font/UAV-OSD-Sans-Mono_Font.UAV-OSD-Sans-Mono_Font"}'>
+
+<div id="panel" data-ue-name="SettingsPanel">
+
+  <div id="header" data-ue-name="Header">
+    <div id="title" data-ue-name="Title">图形设置</div>
+    <div id="subtitle" data-ue-name="Subtitle">GRAPHICS · SKYLINE UI</div>
+  </div>
+  <div class="rule" data-ue-name="HeaderRule" data-ue-variable="false"></div>
+
+  <div id="body" data-ue-name="Body">
+
+    <div id="nav" data-ue-name="Nav">
+      <div class="nav-item on" data-ue-name="NavGraphics">
+        <span class="nav-idx">01</span><span>图形</span>
+      </div>
+      <div class="nav-item" data-ue-name="NavAudio">
+        <span class="nav-idx">02</span><span>音频</span>
+      </div>
+      <div class="nav-item" data-ue-name="NavControls">
+        <span class="nav-idx">03</span><span>操作</span>
+      </div>
+      <div class="nav-item" data-ue-name="NavVideo">
+        <span class="nav-idx">04</span><span>图传</span>
+      </div>
+    </div>
+
+    <div id="vrule" data-ue-name="NavRule" data-ue-variable="false"></div>
+
+    <div id="content" data-ue-name="Content">
+
+      <div class="row" data-ue-name="RowResolution">
+        <div class="row-k">
+          <b>渲染分辨率</b><span>回放与录制按此比例输出</span>
+        </div>
+        <div class="row-v">
+          <div class="combo" data-ue-control="combobox" data-ue-name="ResolutionCombo"
+               data-ue-options="2560 × 1440|1920 × 1080|3840 × 2160|窗口化"
+               data-ue-selected="0">
+            <span>2560 × 1440</span><span class="combo-arrow"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rule" data-ue-name="RuleResolution" data-ue-variable="false"></div>
+
+      <div class="row" data-ue-name="RowRenderDistance">
+        <div class="row-k">
+          <b>渲染距离</b><span>影响远景建筑与地形细节</span>
+        </div>
+        <div class="row-v">
+          <input type="range" min="0" max="100" value="62" data-ue-name="RenderDistanceSlider" />
+          <span class="val">62</span><span class="unit">%</span>
+        </div>
+      </div>
+
+      <div class="rule" data-ue-name="RuleRenderDistance" data-ue-variable="false"></div>
+
+      <div class="row" data-ue-name="RowMotionBlur">
+        <div class="row-k">
+          <b>运动模糊</b><span>高速穿越时启用</span>
+        </div>
+        <div class="row-v">
+          <input type="checkbox" class="switch" checked data-ue-name="MotionBlurSwitch" />
+        </div>
+      </div>
+
+      <div class="rule" data-ue-name="RuleMotionBlur" data-ue-variable="false"></div>
+
+      <div class="row" data-ue-name="RowVSync">
+        <div class="row-k">
+          <b>垂直同步</b><span>消除画面撕裂，可能增加输入延迟</span>
+        </div>
+        <div class="row-v">
+          <input type="checkbox" checked data-ue-name="VSyncCheck" />
+        </div>
+      </div>
+
+      <div class="rule" data-ue-name="RuleVSync" data-ue-variable="false"></div>
+
+      <div class="row" data-ue-name="RowFrameCap">
+        <div class="row-k">
+          <b>帧率上限</b><span>与显示器刷新率对齐</span>
+        </div>
+        <div class="row-v">
+          <div class="combo" data-ue-control="combobox" data-ue-name="FrameCapCombo"
+               data-ue-options="60|120|144|240|不限制" data-ue-selected="2">
+            <span>144</span><span class="combo-arrow"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rule" data-ue-name="RuleFrameCap" data-ue-variable="false"></div>
+
+      <div class="row" data-ue-name="RowLoading">
+        <div class="row-k">
+          <b>资源加载</b><span>当前关卡贴图与地形流式加载</span>
+        </div>
+        <div class="row-v">
+          <progress value="45" max="100" data-ue-name="LoadingProgress"></progress>
+          <span class="val">45</span><span class="unit">%</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="rule" data-ue-name="FooterRule" data-ue-variable="false"></div>
+
+  <div id="footer" data-ue-name="Footer">
+    <div id="footer-hint" data-ue-name="FooterHint">ESC 返回 · 修改即时生效</div>
+    <button id="btn-reset" data-ue-name="BtnReset">恢复默认</button>
+    <button id="btn-cancel" data-ue-name="BtnCancel">取消</button>
+    <button id="btn-apply" data-ue-name="BtnApply">应用设置</button>
+  </div>
+
+</div>
+
+</body>
+</html>

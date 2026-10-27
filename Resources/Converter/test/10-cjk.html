@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Html2UMG CJK font fallback fixture (10-cjk)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1920px; height: 1080px; background: #10151c; color: #e8eef6;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px; overflow: hidden;
+  }
+  .header {
+    width: 1920px; height: 72px; background: linear-gradient(90deg, #1b2734, #223649);
+    display: flex; align-items: center; padding: 0 32px; gap: 24px;
+    border-bottom: 1px solid #2d4257;
+  }
+  .logo {
+    font-family: "Inter", "Segoe UI", sans-serif;
+    font-size: 22px; font-weight: 700; letter-spacing: 1px; color: #6ee7ff;
+  }
+  .nav { display: flex; gap: 28px; font-size: 14px; color: #9fb3c8; }
+  .nav .active { color: #ffffff; font-weight: 600; }
+
+  .page { padding: 32px; display: flex; gap: 32px; }
+
+  .left { width: 1120px; display: flex; flex-direction: column; gap: 24px; }
+  .right { width: 704px; display: flex; flex-direction: column; gap: 24px; }
+
+  .card { background: #172232; border: 1px solid #27384c; border-radius: 12px; padding: 24px; }
+
+  h1, h2, h3 { font-family: "Roboto", "Helvetica Neue", "Noto Sans SC", sans-serif; }
+  h1 { font-size: 32px; line-height: 44px; font-weight: 700; }
+  .subtitle { font-size: 16px; line-height: 26px; color: #9fb3c8; margin-top: 10px; }
+  .serif-note {
+    font-family: "Georgia", "SimSun", "Noto Serif SC", serif;
+    font-size: 16px; line-height: 28px; margin-top: 16px; color: #cbdcf0;
+  }
+  .body-zh {
+    font-family: "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; line-height: 24px; margin-top: 16px; color: #c6d6e6;
+  }
+  .mono-zh {
+    font-family: "Consolas", "Courier New", "SimHei", monospace;
+    font-size: 12px; line-height: 20px; margin-top: 12px; color: #8ff0c0;
+  }
+  .kana { font-family: "Segoe UI", "Yu Gothic", sans-serif; font-size: 14px; line-height: 22px; margin-top: 12px; color: #ffd48a; }
+
+  .toolbar { display: flex; gap: 12px; align-items: center; }
+  .btn {
+    height: 40px; padding: 0 20px; border-radius: 8px; border: none;
+    background: #2f7cf6; color: #ffffff;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px; font-weight: 600; line-height: 40px;
+  }
+  .btn.ghost { background: #1e2c3d; border: 1px solid #35495f; color: #cfe0f0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    text-align: left; font-size: 12px; color: #8fa6bd; font-weight: 600;
+    padding: 10px 12px; border-bottom: 1px solid #27384c; letter-spacing: .5px;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid #1e2c3d; color: #d7e4f2; }
+  td.mono { font-family: "Consolas", monospace; font-size: 12px; color: #9fb3c8; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #143a2c; color: #4ade80; font-size: 12px; }
+  .warn { color: #fbbf24; }
+
+  .row { display: flex; gap: 16px; }
+  .stat { flex: 1; background: #13202e; border: 1px solid #223043; border-radius: 10px; padding: 16px; }
+  .stat .num { font-family: "Segoe UI", sans-serif; font-size: 28px; font-weight: 700; color: #6ee7ff; }
+  .stat .cap { font-size: 12px; color: #8fa6bd; margin-top: 6px; }
+
+  .sizes { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .s12 { font-size: 12px; line-height: 20px; }
+  .s13 { font-size: 13px; line-height: 22px; }
+  .s14 { font-size: 14px; line-height: 24px; }
+  .s16 { font-size: 16px; line-height: 28px; }
+  .s20 { font-size: 20px; line-height: 34px; font-weight: 600; }
+
+  .mixed { font-family: "Inter", "Segoe UI", sans-serif; font-size: 14px; line-height: 24px; }
+  .mixed b { font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">SKYLINE 星穹控制台</div>
+    <div class="nav">
+      <span class="active">总览</span><span>任务</span><span>报表</span><span>设置</span>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="left">
+      <div class="card">
+        <h1>无人机集群调度总览</h1>
+        <div class="subtitle">实时监控 24 架无人机的飞行状态与任务进度，数据每 3 秒刷新一次。</div>
+        <div class="serif-note">提示：本页面使用宋体衬线回退，用于验证衬线中文字体的度量与行高。</div>
+        <div class="body-zh">
+          当前系统负载处于安全区间。所有机组成员已完成起飞前检查，任务队列中共有 12 条待执行指令，
+          其中 3 条为高优先级。若出现通信中断，系统将自动切换到备用链路并在 5 秒内重连。
+        </div>
+        <div class="mono-zh">日志: [链路] 心跳正常 · 延迟 24ms · 丢包率 0.02%</div>
+        <div class="kana">日本語のフォールバック確認（カタカナ・ひらがな）</div>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn">开始任务</button>
+          <button class="btn ghost">暂停调度</button>
+          <button class="btn ghost">导出报表</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr><th>设备编号</th><th>状态</th><th>电量</th><th>最后上报</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>SKYLINE-01 侦察机</td><td><span class="badge">在线</span></td><td class="mono">87%</td><td class="mono">14:32:08</td></tr>
+            <tr><td>SKYLINE-02 中继机</td><td><span class="badge">在线</span></td><td class="mono">64%</td><td class="mono">14:32:05</td></tr>
+            <tr><td>SKYLINE-03 补给机</td><td><span class="warn">待机</span></td><td class="mono">41%</td><td class="mono">14:31:52</td></tr>
+            <tr><td>SKYLINE-04 测绘机</td><td><span class="badge">在线</span></td><td class="mono">92%</td><td class="mono">14:32:07</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="card">
+        <h2 class="s20">运行指标</h2>
+        <div class="row" style="margin-top:16px">
+          <div class="stat"><div class="num">24</div><div class="cap">在线设备</div></div>
+          <div class="stat"><div class="num">98.6%</div><div class="cap">任务完成率</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="s16">字号梯度</h3>
+        <div class="sizes">
+          <div class="s12">12px 中文：设备状态与告警信息</div>
+          <div class="s13">13px 中文：设备状态与告警信息</div>
+          <div class="s14">14px 中文：设备状态与告警信息</div>
+          <div class="s16">16px 中文：设备状态与告警信息</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="s16">中英混排</h3>
+        <div class="mixed">混合排版 Mixed 排版：任务 ID <b>#A1024</b> 已完成，耗时 <b>2分36秒</b>，覆盖率 <b>99.4%</b>。</div>
+        <div class="mixed" style="margin-top:12px">English only line: Drone 12 returned to dock at 14:32, battery 64%.</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

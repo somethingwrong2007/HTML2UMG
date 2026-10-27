@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>16-wrap — WrapBox gap + percentage children</title>
+<style>
+/* Probe page for the WrapBox path (.cards in 12-responsive regressed on this):
+     #WrapFixed  flex-wrap + gap  -> WrapBox; gap must be counted ONCE (InnerSlotPadding),
+                                    never also as slot Padding. Expect x = 24 + 200k, pitch 200.
+     #WrapPct    flex-wrap with percentage-width cells -> WrapBox has no cross-axis weight, so the
+                 width is pinned to the measured px (and must warn). Recorded here so a change in
+                 that behaviour is visible instead of silent.
+   Run with --layout=exact (default) at 1920x1080 and 1280x720. */
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
+body { background: #eef2f0; font-family: "Noto Sans SC", "Segoe UI", sans-serif; font-size: 13px; color: #10202c; }
+.wrap {
+  display: flex; flex-wrap: wrap; gap: 20px;
+  padding: 24px; align-content: flex-start;
+}
+.cell {
+  flex: 0 0 180px; width: 180px; height: 60px;
+  background: #2f6f8f; color: #fff; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+}
+.cards-pct { display: flex; flex-wrap: wrap; gap: 12px; padding: 0 24px 24px; }
+.pcell { width: 22%; height: 40px; background: #1f7a5c; color: #fff; border-radius: 4px;
+         display: flex; align-items: center; justify-content: center; }
+</style></head>
+<body>
+  <div class="wrap" data-ue-name="WrapFixed">
+    <div class="cell" data-ue-name="Cell0">A</div>
+    <div class="cell" data-ue-name="Cell1">B</div>
+    <div class="cell" data-ue-name="Cell2">C</div>
+    <div class="cell" data-ue-name="Cell3">D</div>
+    <div class="cell" data-ue-name="Cell4">E</div>
+  </div>
+  <div class="cards-pct" data-ue-name="WrapPct">
+    <div class="pcell" data-ue-name="Pct0">22%</div>
+    <div class="pcell" data-ue-name="Pct1">22%</div>
+    <div class="pcell" data-ue-name="Pct2">22%</div>
+    <div class="pcell" data-ue-name="Pct3">22%</div>
+  </div>
+</body></html>

@@ -10,8 +10,15 @@ design.html  --[Node + 本机 Chromium]-->  design.json  --[UE 编辑器模块]-
 
 一次性完整重导会覆盖手工在 Designer 里做的**布局**改动。要改布局请改 HTML 或直接改 JSON，蓝图图表里的逻辑不受影响。
 
-两份更详细的文档：`Docs/Html2UMG_Approach.md`（为什么选这条路线，和其他方案比）和
-`Docs/Html2UMG_LayoutContract.md`（JSON 契约的完整定义，手写或改 JSON 时看它）。
+更详细的文档都在 `Docs/` 下：
+
+- `Html2UMG_Approach.md` —— 为什么选这条路线，和其他方案比
+- `Html2UMG_LayoutContract.md` —— JSON 契约的完整定义，手写或改 JSON 时看它
+- `Html2UMG_ResponsiveContract.md` —— 想被连续响应式还原，HTML/CSS 该怎么写
+- `Html2UMG_RelativeSize.md` —— 分段函数（`min(px, %)`、`clamp()`）怎么降维成运行期约束
+- `Html2UMG_Anchoring.md` —— UMG 的位置语义机制矩阵（锚点 / Overlay / SizeBox / ScaleBox 各自能表达什么）
+- `Html2UMG_FontMetrics.md` —— 字体度量、行高换算与中文排版
+- `Html2UMG_CJK_Acceptance.md` —— 中文字体回退与排版的验收记录
 
 ## 环境要求
 
@@ -148,6 +155,80 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 
 单视口分不清"左对齐"和"居中"，用 `--probe` 多给几个视口会明显更准。
 
+## 响应式：一份 WBP 适配多种尺寸
+
+UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器也分成两种模式：
+
+| 模式 | 适用稿子 | 行为 |
+|---|---|---|
+| `--layout=exact`（默认） | 定宽稿（`html,body` 写死宽高、全 px） | 按设计尺寸烘焙。换分辨率时**与浏览器一致**，因为浏览器自己也不重排（1280 视口下它同样只是裁切） |
+| `--layout=responsive` | 流式稿（`%`、`flex`、`min/max-width`、双侧 `inset`） | 输出**运行期可解**的约束，换分辨率时真的重排 |
+
+判断该用哪种不用猜：转换结束会打印一行 `design: fluid (118/144 boxes rescale with the viewport)`，
+同时写进 JSON 的 `settings.design`。`rigid` 的稿子别开 responsive，`fluid` 的稿子别用 exact
+（实测：定宽稿开 responsive 会从 1.4% 恶化到 16%；流体稿用 exact 在 1280 下会从 2.7% 恶化到 34%）。
+
+### 换成什么
+
+| CSS | UMG |
+|---|---|
+| 固定 px | SizeBox + 边锚 |
+| `width/height: %` | Box 槽 Fill 权重，或 `[spacer][child][spacer]` 三格（列容器的交叉轴百分比） |
+| `flex: 1` | Fill 权重 |
+| `min/max-width` | SizeBox 的 Min/MaxDesired*（**只夹期望尺寸**，放在 Fill 槽里运行期不生效） |
+| 双侧 `inset` | Canvas 槽拉伸锚（`Anchors.Minimum != Maximum`） |
+| 单子项 `justify-content: center/end` | Overlay 槽（真居中，替代烘焙偏移） |
+| `flex-wrap: wrap` | WrapBox（`InnerSlotPadding` 是唯一间距来源，槽位 padding 归零） |
+| 折行文本 | `H2UTextWrapBox` |
+| `min(1240px, 92vw)` / `clamp()` | `H2URelativeBox`（百分比 + px 上下限，运行期算） |
+
+`position: absolute` 的基准是**内边距盒**（CSS 规范），所以承载画布的容器会把
+`Border.Padding` 让给流式子项，让 CanvasPanel 正好落在内边距盒上——之前画布落在内容盒里，
+浮层会整体偏一个 padding（实测 12-responsive 的浮层偏了 24/96 px）。
+
+### 三个运行时控件
+
+插件现在有两个模块：编辑器模块 `Html2UMG`，以及一个只含三个控件的 **Runtime 模块 `Html2UMGRuntime`**
+（`Type=Runtime`，只在 UI 真正需要时才被用到，不依赖编辑器模块）。
+
+| 控件 | 解决什么 |
+|---|---|
+| `H2URelativeBox` | 百分比宽度 + px 上下限 + 对齐。因为 `USizeBox` 的 min/max 只夹"期望尺寸"，Fill 槽里运行期完全不生效 |
+| `H2UTextWrapBox` | 让文本**随容器宽度重新折行**。Slate 的 `TextBlock` 在 VerticalBox 的 Automatic 槽里拿不到有界宽度，desired 会按一行算，arrange 再折行就被裁掉 |
+| `H2UWrapBox` | 让 WrapBox 的**自身高度**按真实宽度算。`SWrapBox` 的换行宽度是 `WrapSize`（设计期常量），换分辨率后行数变了高度不会跟着变 |
+
+三者都在 `OnArrangeChildren` 里用真实 allotted 宽度重算，并在高度变化时
+`Invalidate(Previsit)` 请求重排；转换器会把设计期的容器宽度写进 `DesignWrapWidth` 作为首帧依据。
+
+### 实测（同一份 WBP，只换渲染分辨率）
+
+| 稿子 | 1920×1080 | 1440×1080 (4:3) | 1280×720 |
+|---|---|---|---|
+| 流体稿（流式改写版，responsive） | 1.21% | 1.62% | **2.72%** |
+| 定宽稿（exact） | 1.45% | 1.76% | 2.42% |
+| 对照：定宽稿用 responsive | 1.37% | 16.7% | 16.6% |
+
+流体稿那一行值得单看：面板 `width: 92%; max-width: 1240px`，在 1920 下渲染成
+`x=340 / w=1240`、在 1280 下自动变成 `x=51.2 / w=1177.6`，与浏览器逐值一致——
+**一次烘焙，两种分辨率都对**。
+
+### 写法约定
+
+想吃到 responsive 的收益，HTML 那边有些写法上的讲究（`%"/`flex`/`min-max`、文本容器要有确定宽度、
+用双侧 `inset` 表达拉伸、别把 `body` 写死 px），完整清单见
+`Docs/Html2UMG_ResponsiveContract.md`。仓库里的 `test/14-fluid-skyline.html` 是一份真实定宽稿的
+流式改写：**只改 CSS、DOM 一个没动**，1920×1080 下逐元素差异为 0，1280 下面板自动收窄且不再裁切。
+
+### 这一块的已知限制
+
+- **首帧高度滞后**：`WrapBox` 与折行文本在"实际宽度 ≠ 设计宽度"时，第一帧按设计宽报高度，
+  第二帧收敛。这是 Slate 的结构决定的（子先算 desired、父在 arrange 时才给宽度，
+  `STextBlock::AutoWrapText` 的注释里也写了至少晚一帧）。运行时无感，但**截首帧图验收会看到偏矮**。
+- **设计期常量**：`WrapSize`/`DesignWrapWidth` 来自设计视口。要覆盖多个断点，需要按断点各烘一份
+  （`--aspects`，尚未实现），或者接受第二帧收敛。
+- **半连续场景**：flex **行主轴**上的"百分比 + 夹子"（Fill 份额不等于父宽，再乘百分比会变成 41% of 41%）、
+  `vw/vh` 基准是视口而控件乘的是父分配、内容盒与 border 盒的 padding 差——这三类只做近似并向日志给出警告。
+
 ## 原生控件切图
 
 `<select>` 的箭头、勾选框的勾、滑杆的 thumb、进度条的填充，在浏览器里是操作系统主题画的。
@@ -172,6 +253,30 @@ Slate 的画刷只能是一个颜色或一张图，没有渐变、没有背景�
   背后是静态背景时完全正确，压在动态内容上会有痕迹。内阴影（`inset`）不支持。
 
 不支持的还有 `clip-path`、`mask-image`、`filter`、`mix-blend-mode`，转换时会逐个给出警告。
+
+### 圆角与描边
+
+这一块 Slate 的表达力比 CSS 窄，所以按"能不能用一次 outline 说清楚"分三档处理：
+
+**1. 均匀的边框（四边同宽同色、实线）** —— 直接用 brush 的 outline。
+这里有个容易踩的坑：`FSlateBrush` 的 `OutlineSettings` **只有 rounded-box 着色器会消费**，
+普通的 `DrawAs=Box`（9-slice）只画填充。所以"有边框但没有圆角"的元素原本一根线都画不出来
+（实测 6px 边框渲染成完全没有边框，该色块 14.5% 的像素不对）。现在只要有边框就强制走 `RoundedBox`，
+半径可以全为 0 —— 半径 0 的圆角矩形就是矩形，outline 才会被画出来。
+
+**2. 四边不等宽 / 四色 / 非实线（dashed、dotted、double）** —— outline 表达不了。
+非实线一律烘成贴图；四边不等的情况在"最大边不超过 400px"时也烘，超过则退回"取最宽边 + 内边距补偿"。
+加大面积限制是必要的：一条 1920x52 的工具栏虽然面积不大，但截图会横跨整页，把别的页面从 0.57% 拖到 22%。
+
+**3. 四角不同半径** —— `FSlateBrushOutlineSettings.CornerRadii` 本身是 FVector4，按 TL/TR/BR/BL 四个值，
+所以 `border-radius: 30px 0 30px 0` 这种可以直接表达，不需要烘焙。
+
+剩下的差异是**亚像素抗锯齿**：外沿 1px 的描边在 Slate 里是约 88% 混合，浏览器是实心，
+所以 1px 边框类的色块会稳定剩 2~3%，肉眼看是一根稍暗的线。
+
+`Resources/Converter/test/09-borders.html` 是这一块的专用用例（19 个色块：纯圆角、胶囊、
+半径+细边框、半径+粗边框、单边、双色、四色、四角不同、虚线、双线、透明底、嵌套圆角）。
+当前整页差异 **0.40%**，最差单个色块 2.8%（就是上面那根 1px 线）。
 
 ## 验证工具
 
@@ -213,19 +318,97 @@ UnrealEditor.exe <工程>.uproject ^
 | 测试页 | 覆盖内容 | 差异像素 |
 |---|---|---|
 | `02-absolute.html` | 纯绝对定位，anchors 推断 | 0.38% |
-| `07-anchors.html` | 点/横拉/竖拉/四边拉/百分比/居中 | 0.57% |
 | `08-effects.html` | 渐变、backdrop-filter、阴影 | 0.38% |
-| `01-flex.html` | flex 行/列、gap、grow、wrap | 1.59% |
+| `09-borders.html` | 圆角、描边、虚线、多色边框 | 0.40% |
+| `07-anchors.html` | 点/横拉/竖拉/四边拉/百分比/居中 | 0.43% |
+| `04-form.html` | 完整表单 | 1.47% |
+| `01-flex.html` | flex 行/列、gap、grow、wrap | 1.68% |
 | `06-native.html` | 原生控件切图 | 1.99% |
-| `04-form.html` | 完整表单 | 2.01% |
-| `05-controls.html` | 自绘下拉、勾选、滑杆、进度、输入框 | 2.63% |
-| `03-dashboard.html` | 综合 HUD，层级较深 | 3.59% |
+| `05-controls.html` | 自绘下拉、勾选、滑杆、进度、输入框 | 2.55% |
+| `03-dashboard.html` | 综合 HUD，层级较深 | 3.39% |
 
-测量时要**单页单次渲染**：一次编辑器会话里连续导入渲染多个页面，烘焙贴图的结果会互相影响，
-同一个页面能测出不一样的数字。
+测量时每个页面要用自己的 `--assets` 目录。贴图按位置命名（`tex_0`、`tex_1`…），
+两个页面转进同一目录会互相覆盖，前一个页面的 JSON 就指到了后一个页面的像素。
+这会凭空制造出「改坏了」的假象；转换器现在遇到这种情况会直接警告。
 
 剩下的误差主要来自文字（字形光栅化的差异）和少数几处细节，比如文本行盒在 CSS 和 Slate 里的定义不同、
 `SBackgroundBlur` 在离屏渲染里不出效果。
+
+## 对照真实设计发现的问题
+
+除了 `Resources/Converter/test/` 的用例，还拿一份真实设计（1920x7081 的长文档，1358 个控件）做过对照，
+它暴露的问题比用例更真实。
+
+**grid 的两处错误**（这一份设计从 11.58% 降到 7.97% 主要靠它们）：
+
+1. UMG 的 `GridPanel` 没有 gap。原来的做法是给每个单元格两侧各加半个 gap，
+   看着对称，实际把**首列右推了 22px、并吃掉 44px 宽度**——一个 `148px` 的轨道被渲染成 83px，
+   第二列因此提前 43px 开始。gap 只存在于轨道**之间**，所以现在加在每个单元格的尾边（最后一行/列不加）。
+2. `GridPanel` 的列宽由最宽的单元格决定，所以 px 轨道会被内容压窄。现在按 `grid-template-columns`
+   的 px 轨道把单元格宽度钉死（fr / auto 轨道仍然跟随内容）。钉完之后两列位置和浏览器完全一致：
+   `390 / 148`、`582 / 948`。
+
+**`overflow:hidden` 映射成 UMG 的 Clipping**（原来只是"不裁剪"加一条警告）。表格套在圆角面板里会溢出，
+就是靠它解决的。
+
+**自动尺寸元素的阴影**：原来要求元素有显式宽高才能为阴影预留空间，否则裁掉。现在用浏览器实测尺寸作为
+兜底，于是"没有写死宽高的卡片"也能有完整阴影。
+
+**`::before/::after` 仍然丢弃**（5 处），这类装饰需要一个独立控件，还没有做。
+
+### 这类设计的剩余偏差分布
+
+| 区域 | 差异 |
+|---|---|
+| 顶部头部区（0–1000px） | 8.8% / 14.5% |
+| 正文表格区 | 3–8% |
+| 页尾（6500px 之后） | 17.8% / 48.9% |
+
+页尾偏差最大的原因是**累计高度**：UMG 内容比浏览器高约 660px（`Wrap` 7748 vs 7081），
+越往下漂移越多，最后一屏直接错位。这些高度差来自表格单元格和小字号的文本行盒，逐行累计。
+
+真实设计里仍然存在、按出现次数排序的缺口：
+
+| 次数 | 缺口 |
+|---|---|
+| 22 | 宽元素上的单边边框（被折叠成四边，取最宽的一边） |
+| 5 | `::before/::after` 装饰 |
+| 4 | 横向百分比宽度（UMG 的 box slot 没有交叉轴权重） |
+| 3 | `inset` 阴影 |
+| 3 | 行内混排的小字号（`<b>` 之类）被合并成一个 TextBlock |
+
+### 单边边框：宽元素现在也烘焙
+
+「按下最宽的一边 + 内边距补偿」这条近似在**宽元素**上没有别的选择，但早期版本不敢烘焙宽元素，
+因为一次实验里带文字的工具栏（1920x52）烘焙后文字整体错位 1px，测得更差。
+
+后来发现当时错在**同时清零了内边距补偿**：烘焙出的贴图已经包含边框，内容应该退回 CSS 的
+`padding + border` 位置，但补偿一清零，补偿本身也没了。保留补偿之后，同一个页面从 1.68% 降到 1.49%，
+因此现在只要元素不透明、最长边不超过 `--bake-max`，宽元素也一并烘焙。
+
+仍然不烘焙的是**背景透明**的元素（例如只有一条 `border-top` 的表行）：截图会把身后的内容一起拍进去，
+这是之前把一页从 0.57% 拖到 22% 的原因。这类元素继续走「最宽一边 + 补偿」的近似。
+
+### `--pin-flow`：把流式子项按实测高度钉死
+
+长文档的问题是**累计高度**：每个块的高度由内容撑开，逐块差一点，到页尾就偏了几百像素
+（这份设计 7081px 高，UMG 渲染出来高约 660px，最后一屏直接错位）。
+
+`--pin-flow` 会把纵向流式容器里的每个子项按浏览器实测高度写进 `HeightOverride`。
+效果是**两个方向**的，所以默认关闭：
+
+| 页面 | 默认 | 加 `--pin-flow` |
+|---|---|---|
+| 真实设计（1920x7081 长文档） | 7.97% | **4.81%** |
+| 01-flex | 1.49% | 0.89% |
+| 06-native | 1.99% | 1.84% |
+| 07-anchors | 0.43% | 0.31% |
+| 04-form | 1.47% | 3.57% |
+| 02-absolute | 0.38% | 1.57% |
+| 03-dashboard | 3.05% | 8.10% |
+
+也就是说：**文档型页面**（长滚动、少 flex 填充）明显受益；**应用型页面**（表单、仪表盘、依赖 flex 分配）
+会受损，因为钉死高度会和填充分配打架。所以它是一个按页面类型选择的开关，不是默认行为。
 
 ## 已知限制
 
@@ -253,12 +436,17 @@ UnrealEditor.exe <工程>.uproject ^
 ```
 Plugins/Html2UMG/
   Html2UMG.uplugin
-  Source/Html2UMG/
+  Source/Html2UMG/          编辑器模块：导入、面板、控制台命令、离屏渲染
     Public|Private/
       Importer/     JSON 到 WidgetBlueprint：建树、反射写属性、贴图与字体导入
       Editor/       面板、控制台命令、蓝图/Python API、离屏渲染
       Html2UMGTypes 契约的 C++ 表示和解析
+  Source/Html2UMGRuntime/   Runtime 模块：三个运行期控件（相对尺寸 / 文本折行 / 换行盒）
   Resources/
     Converter/      Node 转换器（零依赖，通过 CDP 驱动本机浏览器）
-    Tools/          pngdiff / style_audit / anchor_check / visual_audit / run_acceptance
+      src/          mapper（分类、槽位、画刷、网格）、bake（切图与效果）、assets（贴图/字体）、
+                    fontmetrics（字体度量）、values（CSS 值解析）
+      test/         01–16 测试页与 validate.js 契约校验
+    Tools/          pngdiff / style_audit / anchor_check / visual_audit / run_acceptance /
+                    font_metrics / residual_correct
 ```

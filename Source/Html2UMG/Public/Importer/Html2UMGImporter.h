@@ -19,4 +19,12 @@ public:
 
 	/** Optional progress sink; severity is "info" | "warning" | "error". */
 	static void SetMessageSink(TFunction<void(const FH2UMessage&)> InSink);
+
+	/**
+	 * Writes the import's messages into the log (errors at Error, warnings at Warning, info only at
+	 * Verbose). Console commands call this before their one-line summary so a failed import explains
+	 * itself: "import FAILED (0 created, 1 error(s))" with no error text is impossible to debug.
+	 * Returns the number of messages written.
+	 */
+	static int32 LogImportMessages(const FH2UImportResult& Result);
 };

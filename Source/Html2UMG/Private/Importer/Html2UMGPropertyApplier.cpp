@@ -1068,6 +1068,27 @@ namespace
 		return bOk;
 	}
 
+	/**
+	 * A fractional number aimed at an enum property is silently truncated by the byte write, which is
+	 * how "ContentHAlign": 0.5 turned into HAlign_Left (0) on a UH2URelativeBox that declared its
+	 * alignment as TEnumAsByte. The value still lands (truncated) so old layouts keep working, but say
+	 * so loudly - the fix is always "send the enum name" or "make the property a float".
+	 */
+	void WarnAboutTruncatedEnum(FApplyContext& Context, const FProperty* Property, const UEnum* Enum, double Number)
+	{
+		const double Truncated = FMath::TruncToDouble(Number);
+		if (FMath::IsNearlyEqual(Number, Truncated))
+		{
+			return;
+		}
+
+		Context.Warn(FString::Printf(
+			TEXT("%s: property '%s' is an enum (%s) but got %g; the fraction is dropped and value %lld is used. ")
+			TEXT("Send an enum name instead (a 0..1 fraction means the property should be a float)."),
+			*Context.Prefix, *Property->GetName(), Enum ? *Enum->GetName() : TEXT("<unknown enum>"),
+			Number, static_cast<long long>(static_cast<int64>(Truncated))));
+	}
+
 	/** Writes one JSON value into one property of the container (UObject or struct memory). */
 	bool ApplyPropertyValue(void* Container, FProperty* Property, const TSharedPtr<FJsonValue>& Value, FApplyContext& Context)
 	{
@@ -1237,6 +1258,7 @@ namespace
 					return false;
 				}
 				EnumValue = static_cast<int64>(Number);
+				WarnAboutTruncatedEnum(Context, Property, Enum, Number);
 			}
 
 			if (Underlying)
@@ -1273,6 +1295,7 @@ namespace
 						return false;
 					}
 					EnumValue = static_cast<int64>(Number);
+					WarnAboutTruncatedEnum(Context, Property, Enum, Number);
 				}
 
 				ByteProperty->SetIntPropertyValue(Dest, EnumValue);
@@ -1661,7 +1684,27 @@ FH2UApplyStats FHtml2UMGPropertyApplier::ApplyJsonObject(
 				*Context, *Field.Name, *Class->GetName());
 		}
 
+		const int32 AppliedBefore = Ctx.Stats.Applied;
 		ApplyPropertyValue(Target, Property, Value, Ctx);
+
+		if (Ctx.Stats.Applied > AppliedBefore)
+		{
+			// USizeBox (and anything else using UE's bOverride_<Property> gate) ignores the value until
+			// the bit is set: USizeBox::SynchronizeProperties only forwards MinDesiredWidth to Slate
+			// when bOverride_MinDesiredWidth is true, so a layout that carries only "MinDesiredWidth"
+			// would pass import without ever clamping anything at runtime.
+			const FString Name = Property->GetName();
+			if (!Name.StartsWith(TEXT("bOverride_"), ESearchCase::IgnoreCase))
+			{
+				const FName OverrideName(*FString::Printf(TEXT("bOverride_%s"), *Name));
+				if (const FBoolProperty* OverrideBit = CastField<FBoolProperty>(FindFProperty<FProperty>(Class, OverrideName)))
+				{
+					OverrideBit->SetPropertyValue_InContainer(Target, true);
+					++Ctx.Stats.Applied;
+					UE_LOG(LogHtml2UMG, Verbose, TEXT("Html2UMG: %s: implied '%s' = true from '%s'"), *Context, *OverrideName.ToString(), *Name);
+				}
+			}
+		}
 	}
 
 	return Ctx.Stats;

@@ -231,6 +231,86 @@ namespace
 			EntryObject->TryGetStringField(TEXT("family"), Ref.Family);
 			EntryObject->TryGetNumberField(TEXT("weight"), Ref.Weight);
 			EntryObject->TryGetBoolField(TEXT("italic"), Ref.bItalic);
+			if (!EntryObject->TryGetNumberField(TEXT("subface"), Ref.SubFace))
+			{
+				EntryObject->TryGetNumberField(TEXT("subFace"), Ref.SubFace);
+			}
+
+			// Optional "fallbacks": [{family, file, weight, italic}]. Layouts written before the
+			// field existed simply have no array; a bare "file.ttf" string is accepted too.
+			const TArray<TSharedPtr<FJsonValue>>* FallbackValues = nullptr;
+			if (EntryObject->TryGetArrayField(TEXT("fallbacks"), FallbackValues) && FallbackValues)
+			{
+				for (const TSharedPtr<FJsonValue>& FallbackValue : *FallbackValues)
+				{
+					if (!FallbackValue.IsValid())
+					{
+						continue;
+					}
+
+					FH2UFontFallback Fallback;
+					FString StringForm;
+					if (FallbackValue->TryGetString(StringForm))
+					{
+						Fallback.File = StringForm;
+					}
+					else if (const TSharedPtr<FJsonObject> FallbackObject = FallbackValue->AsObject())
+					{
+						FallbackObject->TryGetStringField(TEXT("key"), Fallback.Key);
+						FallbackObject->TryGetStringField(TEXT("family"), Fallback.Family);
+						if (!FallbackObject->TryGetStringField(TEXT("file"), Fallback.File) || Fallback.File.IsEmpty())
+						{
+							FallbackObject->TryGetStringField(TEXT("src"), Fallback.File);
+						}
+						FallbackObject->TryGetNumberField(TEXT("weight"), Fallback.Weight);
+						FallbackObject->TryGetBoolField(TEXT("italic"), Fallback.bItalic);
+						// "subface" is the converter's spelling; "subFace" is accepted for hand-written layouts.
+						if (!FallbackObject->TryGetNumberField(TEXT("subface"), Fallback.SubFace))
+						{
+							FallbackObject->TryGetNumberField(TEXT("subFace"), Fallback.SubFace);
+						}
+
+						// Optional "coverage": [[first, last], ...] (inclusive), the codepoints this face
+						// really covers. Also accepts [{"first":a,"last":b}] and [{"start":a,"end":b}].
+						const TArray<TSharedPtr<FJsonValue>>* CoverageValues = nullptr;
+						if (FallbackObject->TryGetArrayField(TEXT("coverage"), CoverageValues) && CoverageValues)
+						{
+							for (const TSharedPtr<FJsonValue>& CoverageValue : *CoverageValues)
+							{
+								FH2UCharRange Range;
+								bool bValid = false;
+
+								const TArray<TSharedPtr<FJsonValue>>* Pair = nullptr;
+								if (CoverageValue.IsValid() && CoverageValue->TryGetArray(Pair) && Pair && Pair->Num() >= 2)
+								{
+									bValid = (*Pair)[0]->TryGetNumber(Range.First) && (*Pair)[1]->TryGetNumber(Range.Last);
+								}
+								else if (const TSharedPtr<FJsonObject> CoverageObject = CoverageValue.IsValid() ? CoverageValue->AsObject() : nullptr)
+								{
+									if ((CoverageObject->TryGetNumberField(TEXT("first"), Range.First) || CoverageObject->TryGetNumberField(TEXT("start"), Range.First))
+										&& (CoverageObject->TryGetNumberField(TEXT("last"), Range.Last) || CoverageObject->TryGetNumberField(TEXT("end"), Range.Last)))
+									{
+										bValid = true;
+									}
+								}
+
+								if (bValid && Range.Last >= Range.First && Range.First >= 0)
+								{
+									Fallback.Coverage.Add(Range);
+								}
+							}
+						}
+					}
+
+					// A fallback may reference its file through a key instead of inlining "file"; keep
+					// it and let the importer resolve the key against assets.fonts.
+					if (!Fallback.File.IsEmpty() || !Fallback.Key.IsEmpty())
+					{
+						Ref.Fallbacks.Add(Fallback);
+					}
+				}
+			}
+
 			OutAssets.Add(Ref.Key, Ref);
 		}
 	}

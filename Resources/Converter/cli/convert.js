@@ -12,7 +12,7 @@ const { pathToFileURL } = require('url');
 const { parseArgs, ArgError, USAGE } = require('../src/args');
 const { launchBrowser } = require('../src/browser');
 const { CDPSession } = require('../src/cdp');
-const { stabilize, captureSnapshot, expandPartials } = require('../src/snapshot');
+const { stabilize, captureSnapshot, expandPartials, collectPlatformFonts } = require('../src/snapshot');
 const { AssetRegistry } = require('../src/assets');
 const { bakeControls } = require('../src/bake');
 const { Mapper } = require('../src/mapper');
@@ -49,6 +49,41 @@ function collectRemoteUrls(snapshot) {
     }
   }
   return out;
+}
+
+/**
+ * Is this design fluid or pinned to one width?
+ *
+ * The probes re-snapshot the page at other viewports. A fluid design (percentages, flex, grids)
+ * rescales its boxes; a design with `html,body{width:1920px;height:1080px}` reports identical
+ * rects forever. `--layout=responsive` can only do its job on the former, so say so instead of
+ * silently emitting constraints that cannot move.
+ */
+function diagnoseDesign(primary, probes) {
+  // NOTE on the counter: `scaled` counts boxes whose width *followed* the viewport change. An
+  // earlier version counted the ones that did NOT scale and then called a high count "fluid",
+  // which reported the pinned 1920x1080 skyline page as fluid.
+  const result = { flow: 'unknown', compared: 0, scaled: 0, fixed: 0, scaledFraction: 0 };
+  const usable = (probes || []).filter((p) => p && Array.isArray(p.elements) && p.viewport);
+  if (!primary || !Array.isArray(primary.elements) || !usable.length) return result;
+  for (const probe of usable) {
+    const scale = probe.viewport.width / (primary.viewport ? primary.viewport.width : probe.viewport.width);
+    if (!(Math.abs(scale - 1) > 0.02)) continue;
+    for (const rec of primary.elements) {
+      const other = probe.elements[rec.i];
+      if (!rec.rect || !other || !other.rect) continue;
+      if (rec.rect[2] < 8 || rec.rect[3] < 8) continue;
+      result.compared += 1;
+      const expected = rec.rect[2] * scale;
+      if (Math.abs(other.rect[2] - expected) <= Math.max(4, rec.rect[2] * 0.05)) result.scaled += 1;
+      else result.fixed += 1;
+    }
+  }
+  if (result.compared) {
+    result.scaledFraction = Math.round((result.scaled / result.compared) * 1000) / 1000;
+    result.flow = result.scaledFraction >= 0.5 ? 'fluid' : result.scaledFraction <= 0.1 ? 'rigid' : 'mixed';
+  }
+  return result;
 }
 
 /** Elements that need the browser to rasterise them (inline SVG, .svg images). */
@@ -163,7 +198,43 @@ async function main(argv) {
     baseDir: path.dirname(opts.input),
     warn: (message) => warnings.push(message),
     info: (message) => log(opts, `  ${message}`),
+    fontPolicy: opts.fontPolicy,
+    allowTtc: opts.ttcSubfaces !== false,
   });
+
+  // Every knob that changes the output is recorded in layout.settings, so two runs of the
+  // same HTML can be diffed (and pixel-audited) without guessing which flags were used.
+  const effectiveSettings = {
+    fontPolicy: ['redistributable', 'engine'].indexOf(String(opts.fontPolicy)) >= 0 ? String(opts.fontPolicy) : 'any',
+    fontMap: (() => {
+      const raw = String(opts.fontMap || process.env.HTML2UMG_FONT_MAP || 'ignore').toLowerCase();
+      return raw === 'keep' ? 'keep' : 'ignore';
+    })(),
+    ttcSubfaces: opts.ttcSubfaces !== false,
+    wrapTolerance: (() => {
+      const raw = opts.wrapTolerance !== null && opts.wrapTolerance !== undefined
+        ? opts.wrapTolerance
+        : process.env.HTML2UMG_WRAP_TOLERANCE;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : 0;
+    })(),
+    cjkBreaks: (() => {
+      const raw = String(opts.cjkBreaks || process.env.HTML2UMG_CJK_BREAKS || 'policy').toLowerCase();
+      return raw === 'none' || raw === 'off' ? 'none' : 'policy';
+    })(),
+    lineHeightModel: (() => {
+      const raw = String(opts.lineHeightModel || process.env.HTML2UMG_LINE_HEIGHT_MODEL || 'per-font').toLowerCase();
+      return raw === 'legacy' ? 'legacy' : 'per-font';
+    })(),
+    lineBoxSnap: (() => {
+      const raw = String(opts.lineBoxSnap || process.env.HTML2UMG_LINE_BOX_SNAP || 'exact').toLowerCase();
+      return raw === 'half' || raw === 'int' || raw === 'font' ? raw : 'exact';
+    })(),
+    layout: (() => {
+      const raw = String(opts.layout || process.env.HTML2UMG_LAYOUT || 'exact').toLowerCase();
+      return raw === 'responsive' ? 'responsive' : 'exact';
+    })(),
+  };
 
   let browser = null;
   let session = null;
@@ -225,12 +296,48 @@ async function main(argv) {
       warnings.push(`note: ${snapshot.inaccessibleSheets} stylesheet(s) could not be read (cross-origin); declared sizes may be missed`);
     }
 
+    // Which face did the browser actually draw each text element with? The DOM alone
+    // cannot tell: a Latin stack silently gains a system CJK face for Han glyphs, and
+    // that substitution is what the importer has to reproduce. Runs before the probe
+    // snapshots, while data-h2u-idx still matches the primary snapshot's indices.
+    log(opts, '      probing platform fonts');
+    try {
+      const platform = await collectPlatformFonts(session, snapshot, { warn: (message) => warnings.push(message) });
+      if (platform && platform.nodes) {
+        const top = platform.families.slice(0, 4).map((entry) => `${entry.family}(${entry.glyphs})`).join(', ');
+        log(
+          opts,
+          `      platform fonts: ${platform.queried}/${platform.nodes} text element(s)` +
+            `${platform.failed ? ` (${platform.failed} without data)` : ''}${top ? ` — ${top}` : ''}`
+        );
+      }
+    } catch (err) {
+      warnings.push(`fonts: platform font probe failed (${err.message}); falling back to cmap coverage only`);
+    }
+
     for (const probe of opts.probes) {
       log(opts, `      probe viewport ${probe.width}x${probe.height}`);
       await session.setViewport(probe.width, probe.height);
       await stabilize(session);
       probes.push(
         await captureSnapshot(session, { width: probe.width, height: probe.height, pseudo: false, declared: false })
+      );
+    }
+    // Fluid or pinned? `--layout=responsive` only pays off on a fluid design, so measure it and
+    // record the verdict in settings.design (and warn once when the two disagree).
+    const design = diagnoseDesign(snapshot, probes);
+    effectiveSettings.design = design;
+    if (design.flow !== 'unknown') {
+      log(
+        opts,
+        `      design: ${design.flow} — ${design.scaled} scalable / ${design.fixed} fixed of ${design.compared} boxes`
+      );
+    }
+    if (effectiveSettings.layout === 'responsive' && design.flow === 'rigid') {
+      warnings.push(
+        'layout: this design is pinned to one width (' + (design.scaledFraction * 100) +
+          '% of boxes rescale between probes), so responsive constraints cannot reflow it; ' +
+          'either author the page with %/flex, or use --scale-box / --aspects'
       );
     }
     if (opts.probes.length) {
@@ -282,7 +389,20 @@ async function main(argv) {
       snapshot,
       probes,
       assets: registry,
-      options: { scaleBox: opts.scaleBox, baked },
+      options: {
+        scaleBox: opts.scaleBox,
+        baked,
+        pinFlowHeights: opts.pinFlowHeights === true,
+        // Typography A/B knobs (see Docs/Html2UMG_FontMetrics.md). The mapper also honours the
+        // HTML2UMG_LINE_HEIGHT_MODEL / HTML2UMG_TEXT_SHADOW environment variables.
+        lineHeightModel: opts.lineHeightModel,
+        textShadow: opts.textShadow,
+        lineBoxSnap: opts.lineBoxSnap,
+        layout: effectiveSettings.layout,
+        fontMap: effectiveSettings.fontMap,
+        wrapTolerance: opts.wrapTolerance,
+        cjkBreaks: opts.cjkBreaks,
+      },
     });
     const root = mapper.map();
     for (const warning of mapper.warnings) warnings.push(warning);
@@ -297,6 +417,8 @@ async function main(argv) {
       source: opts.input.replace(/\\/g, '/'),
       blueprint,
       viewport: { width: opts.viewport.width, height: opts.viewport.height },
+      // Flags that changed the output. Same HTML + same settings => same JSON.
+      settings: effectiveSettings,
       assets: registry.toJson(),
       warnings: [],
       root,
@@ -312,6 +434,26 @@ async function main(argv) {
       fs.writeFileSync(path.resolve(opts.shot), pngShot);
     }
 
+    // Licensing: everything in assets/ is imported as a UFontFace and therefore ships
+    // inside the package. Tell the user once, loudly, instead of letting a proprietary
+    // face slip into a release unnoticed. (Kept out of `warnings` on purpose: a single
+    // ubiquitous Windows face would otherwise turn every --strict CI run red.)
+    const licenses = registry.licenseSummary();
+    if (!opts.quiet && licenses.nonRedistributable.length) {
+      const list = licenses.nonRedistributable
+        .slice(0, 8)
+        .map((entry) => `${entry.family} (${path.basename(entry.file)}, ${entry.role}, ${entry.license})`)
+        .join(', ');
+      const more = licenses.nonRedistributable.length > 8 ? ` + ${licenses.nonRedistributable.length - 8} more` : '';
+      process.stderr.write(
+        `\n  ! font-license: ${licenses.nonRedistributable.length} non-redistributable font(s) are embedded in the package:\n` +
+          `      ${list}${more}\n` +
+          `    These files are imported as UFontFace bulk data and ship with the game. Replace them with\n` +
+          `    redistributable faces (Noto Sans SC / Source Han) or confirm you hold a licence before release.\n` +
+          `    Pass --font-policy=redistributable to refuse embedding them.\n\n`
+      );
+    }
+
     const stats = summarize(cleaned);
     const elapsed = Date.now() - started;
     process.stdout.write(
@@ -321,7 +463,10 @@ async function main(argv) {
         `  blueprint  ${blueprint}`,
         `  widgets    ${stats.total} (${stats.depth} deep)`,
         `  classes    ${stats.classes}`,
-        `  assets     ${stats.textures} texture(s), ${stats.fonts} font(s)`,
+        `  assets     ${stats.textures} texture(s), ${stats.fonts} font(s)` +
+          (registry.licenseSummary().counts.proprietary
+            ? ` (${registry.licenseSummary().counts.proprietary} proprietary file(s), see the font-license note)`
+            : ''),
         `  warnings   ${warnings.length}`,
         `  elapsed    ${elapsed} ms`,
       ].join('\n') + '\n'

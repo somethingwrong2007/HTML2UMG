@@ -316,6 +316,93 @@ function finite(v, fallback) {
   return Number.isFinite(v) ? v : fallback === undefined ? 0 : fallback;
 }
 
+/**
+ * One atom of a CSS size expression: a px length, or a proportion of something.
+ *
+ * '%' is a proportion of the containing block, vw/vh/vmin/vmax a proportion of the viewport.
+ * They are different bases, which is why min(40%, 60vw) cannot be reduced (see below).
+ */
+function parseSizeAtom(text) {
+  const s = String(text === null || text === undefined ? '' : text).trim().toLowerCase();
+  if (!s) return null;
+  const m = /^(-?[\d.]+(?:e[-+]?\d+)?)(%|px|vw|vh|vmin|vmax)?$/.exec(s);
+  if (!m) return null;
+  const value = parseFloat(m[1]);
+  if (!Number.isFinite(value)) return null;
+  const unit = m[2] || 'px';
+  if (unit === 'px') return { kind: 'px', value };
+  return {
+    kind: 'percent',
+    value: value / 100,
+    unit,
+    base: unit === '%' ? 'parent' : 'viewport',
+  };
+}
+
+/**
+ * Reduce a *segmented* CSS size expression to the single box descriptor the contract can carry:
+ * `{ percent, minPx, maxPx }` (Docs/Html2UMG_RelativeSize.md).
+ *
+ * Supported (the four shapes a responsive design actually uses):
+ *   min(1240px, 92vw)     -> { percent: 0.92, minPx: null, maxPx: 1240 }
+ *   min(1240px, 92%)      -> same
+ *   max(600px, 40%)       -> { percent: 0.40, minPx: 600,  maxPx: null }
+ *   clamp(320px, 50%, 900px) -> { percent: 0.50, minPx: 320, maxPx: 900 }
+ *
+ * Also reduced, because dropping them would silently lose the size:
+ *   - N% / Nvw on its own        -> { percent } with no bounds
+ *   - min()/max()/clamp() of px only -> { percent: null, px } (a constant)
+ *   - min()/max() of two proportions -> the smaller/larger one
+ *
+ * Returns null when the value is not relative at all (a plain px size goes through the SizeBox
+ * path) or cannot be reduced: calc()/var()/em/pt, a percentage mixed with a viewport unit,
+ * clamp() whose bounds are not px, or a function name we do not model.
+ */
+function parseRelativeSize(input) {
+  const raw = String(input === null || input === undefined ? '' : input).trim().toLowerCase();
+  if (!raw) return null;
+  const atom = parseSizeAtom(raw);
+  if (atom) {
+    if (atom.kind !== 'percent') return null; // a plain px size is not a relative size
+    return { percent: atom.value, minPx: null, maxPx: null, unit: atom.unit };
+  }
+  const fn = /^(min|max|clamp)\s*\(([\s\S]*)\)$/.exec(raw);
+  if (!fn) return null;
+  const name = fn[1];
+  const atoms = splitTopLevel(fn[2], ',').map(parseSizeAtom);
+  if (!atoms.length || atoms.some((a) => a === null)) return null;
+  const percents = atoms.filter((a) => a.kind === 'percent');
+  const pixels = atoms.filter((a) => a.kind === 'px');
+  const bases = new Set(percents.map((p) => p.base));
+  if (bases.size > 1) return null; // min(40%, 60vw): two different bases, not one proportion
+  const constPx = (values) => ({ percent: null, minPx: null, maxPx: null, px: values[0] });
+
+  if (name === 'clamp') {
+    if (atoms.length !== 3) return null;
+    const [lo, mid, hi] = atoms;
+    if (mid.kind === 'percent') {
+      if (lo.kind !== 'px' || hi.kind !== 'px') return null;
+      return { percent: mid.value, minPx: lo.value, maxPx: hi.value, unit: mid.unit };
+    }
+    if (pixels.length !== 3) return null;
+    return constPx([Math.min(Math.max(mid.value, lo.value), hi.value)]);
+  }
+
+  if (!percents.length) {
+    const values = pixels.map((a) => a.value);
+    return constPx([name === 'min' ? Math.min(...values) : Math.max(...values)]);
+  }
+  const pick = (list) => (name === 'min' ? Math.min(...list) : Math.max(...list));
+  const percent = pick(percents.map((p) => p.value));
+  if (!pixels.length) return { percent, minPx: null, maxPx: null, unit: percents[0].unit };
+  // min() takes the smaller of its arguments, so a px argument is a CEILING on the proportion;
+  // max() takes the larger, so a px argument is a FLOOR.
+  const bound = pick(pixels.map((a) => a.value));
+  return name === 'min'
+    ? { percent, minPx: null, maxPx: bound, unit: percents[0].unit }
+    : { percent, minPx: bound, maxPx: null, unit: percents[0].unit };
+}
+
 module.exports = {
   EPS,
   clamp,
@@ -336,5 +423,6 @@ module.exports = {
   parseBoxShadow,
   parseBackgroundImage,
   parseBackgroundSize,
+  parseRelativeSize,
   finite,
 };

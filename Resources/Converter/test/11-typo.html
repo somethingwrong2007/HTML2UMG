@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Html2UMG typography fixture (11-typo)</title>
+<style>
+  /* Font metrics / line-height / line-breaking fixture.
+     Every case is a fixed-width box so the browser's own line boxes are the reference:
+     the geometry dump can then compare each TextBlock's height against the box below. */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1200px; height: 900px; background: #0f141a; color: #e6edf5;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; overflow: hidden;
+  }
+  .page { padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+  .row { display: flex; gap: 20px; margin-bottom: 18px; }
+  .box {
+    width: 400px; padding: 8px; border: 1px solid #2a3a4d; border-radius: 8px;
+    background: #141c26;
+  }
+  .tag { font-size: 11px; color: #7f95ab; margin-bottom: 6px; letter-spacing: .4px; }
+  /* (1) space-less Chinese paragraph in a 400px box: 4 lines at 14px/22px in Chromium. */
+  .zh-plain { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 22px; }
+  /* (2) the same text with an explicit, larger line-height: line box must follow it. */
+  .zh-lh30 { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 30px; }
+  /* (3) mixed Latin + CJK, no spaces around the Latin words. */
+  .mix { font-family: "Segoe UI", "Noto Sans SC", sans-serif; font-size: 14px; line-height: 22px; }
+  /* (4) multi-size column: the same sentence at 12/13/14/16/20 px. */
+  .s12 { font-size: 12px; }
+  .s13 { font-size: 13px; }
+  .s14 { font-size: 14px; }
+  .s16 { font-size: 16px; }
+  .s20 { font-size: 20px; }
+  .sizes div { font-family: "Segoe UI", "Noto Sans SC", sans-serif; }
+  /* (5) a title that must wrap inside its box instead of overflowing. */
+  .title-wrap { width: 240px; font-size: 20px; font-weight: 700; line-height: 28px;
+                font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+  /* (6) nowrap control: must NOT wrap, and must not get a WrapTextAt. */
+  .nowrap { width: 260px; white-space: nowrap; overflow: hidden; font-size: 14px; line-height: 22px;
+            font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+  /* (7) letter-spacing control, Latin and CJK. */
+  .ls-latin { letter-spacing: 1.5px; font-size: 14px; }
+  .ls-cjk { letter-spacing: 2px; font-size: 14px; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+  /* (8) default line-height (normal) at three sizes for the per-font coefficient check. */
+  .norm12 { font-size: 12px; font-family: "Segoe UI", sans-serif; }
+  .norm14 { font-size: 14px; font-family: "Segoe UI", sans-serif; }
+  .norm16 { font-size: 16px; font-family: "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1 data-ue-name="TypoTitle">字体度量 / 行高 / 断行 fixture</h1>
+
+  <div class="row">
+    <div class="box">
+      <div class="tag" data-ue-name="TagZh">01 无空格中文长段 (400px)</div>
+      <div class="zh-plain" data-ue-name="ZhPlain">字体排版在浏览器与游戏引擎之间往往存在系统性差异，行高换算不正确会让每一行都多出或缺少一两个像素，段落越长累计偏移越大，最后整列错位甚至把内容挤出面板边界。</div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagZhLh">02 显式 line-height:30px</div>
+      <div class="zh-lh30" data-ue-name="ZhLh30">显式行高等价于把行盒固定为三十像素，Slate 的行盒由字体自身的上升与下降部决定，因此必须按字体度量折算，不能沿用统一的常数。</div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagMix">03 中英混排</div>
+      <div class="mix" data-ue-name="MixText">HUD 面板里的 FPS显示为 144，GPU占用 63%，延迟 24ms，丢包率 0.02%，这些指标每 3 秒刷新一次并在 5 秒无响应时告警。</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="box">
+      <div class="tag" data-ue-name="TagSizes">04 多字号 12/13/14/16/20</div>
+      <div class="sizes">
+        <div class="s12" data-ue-name="Size12">十二像素中文行高测试 ABC</div>
+        <div class="s13" data-ue-name="Size13">十三像素中文行高测试 ABC</div>
+        <div class="s14" data-ue-name="Size14">十四像素中文行高测试 ABC</div>
+        <div class="s16" data-ue-name="Size16">十六像素中文行高测试 ABC</div>
+        <div class="s20" data-ue-name="Size20">二十像素中文行高测试 ABC</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagTitleWrap">05 按宽度强制换行标题 (240px)</div>
+      <div class="title-wrap" data-ue-name="TitleWrap">无人机集群调度总览报表</div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagNowrap">06 white-space:nowrap 对照</div>
+      <div class="nowrap" data-ue-name="NowrapText">这一行不允许换行应当被裁切显示</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="box">
+      <div class="tag" data-ue-name="TagSpacing">07 letter-spacing 1.5px / 2px</div>
+      <div class="ls-latin" data-ue-name="SpaceLatin">AVATAR HUD SKYLINE</div>
+      <div class="ls-cjk" data-ue-name="SpaceCjk">星穹控制台面板</div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagNormal">08 line-height:normal 12/14/16</div>
+      <div class="norm12" data-ue-name="Norm12">Normal line box 12px</div>
+      <div class="norm14" data-ue-name="Norm14">Normal line box 14px</div>
+      <div class="norm16" data-ue-name="Norm16">Normal line box 16px</div>
+    </div>
+    <div class="box">
+      <div class="tag" data-ue-name="TagGap">09 行距敏感：两段对照</div>
+      <div class="zh-plain" data-ue-name="GapA">第一段使用十四像素字号与二十二像素行高，用于确认连续两段的竖直累计偏移。</div>
+      <div class="zh-plain" data-ue-name="GapB">第二段紧接其后，若行高换算偏大，两段之间的基线距离会被逐行放大。</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

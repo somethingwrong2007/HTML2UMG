@@ -17,6 +17,36 @@ struct HTML2UMG_API FH2UMessage
 	bool IsError() const { return Severity.Equals(TEXT("error"), ESearchCase::IgnoreCase); }
 };
 
+/** An inclusive codepoint span, e.g. {0x4E00, 0x9FFF}. */
+struct HTML2UMG_API FH2UCharRange
+{
+	int32 First = 0;
+	int32 Last = 0;
+};
+
+/**
+ * One extra font file to consult when the primary face of a family has no glyph for a character,
+ * e.g. the CJK face the browser actually fell back to for Chinese text.
+ * Emitted by the converter as assets.fonts[].fallbacks[]; optional, and older layouts omit it.
+ */
+struct HTML2UMG_API FH2UFontFallback
+{
+	FString Key;       // also declared as a normal assets.fonts[] entry; used to skip a redundant family asset
+	FString Family;    // fonts only; used to name the imported asset
+	FString File;      // TTF/TTC/OTF/OTC, relative to the layout json directory, or absolute
+	int32 Weight = 400;
+	bool bItalic = false;
+	/** Face inside a multi-face file (.ttc/.otc); -1 = pick by weight/italic from the file's faces. */
+	int32 SubFace = -1;
+	/**
+	 * Codepoints this face actually covers (the converter scans the font's cmap), as inclusive
+	 * [first, last] pairs. Empty for layouts written before the field existed, in which case the
+	 * importer falls back to its built-in CJK block table. Never overlaps another fallback's
+	 * coverage - the converter splits the chain so each face owns its own range.
+	 */
+	TArray<FH2UCharRange> Coverage;
+};
+
 /** A texture or font file referenced by the layout, by key. */
 struct HTML2UMG_API FH2UAssetRef
 {
@@ -25,6 +55,11 @@ struct HTML2UMG_API FH2UAssetRef
 	FString Family;    // fonts only
 	int32 Weight = 400;
 	bool bItalic = false;
+	/** Face inside a multi-face file (.ttc/.otc); -1 = pick by weight/italic from the file's faces. */
+	int32 SubFace = -1;
+
+	/** Faces the browser used for characters the primary face lacks (fonts only; may be empty). */
+	TArray<FH2UFontFallback> Fallbacks;
 };
 
 /**

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Html2UMG responsive fixture (12-responsive) — pure flow, no media query</title>
+<style>
+  /* 12-responsive: 证明"纯流式 + 锚点"能在 21:9 / 16:9 / 4:3 下自然重排。
+     这一页 **不使用任何 media query**：换列靠 flex-wrap -> WrapBox，宽度靠 flex / 百分比，
+     位置靠双侧 inset -> 拉伸锚。断点变体请见 13-breakpoints.html。
+
+     三个断点的期望见文件末尾的注释表（数值取自转换器在三个视口下的浏览器实测，非手算）。 */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    display: flex;                     /* 根：一行 = 固定导航 + 弹性内容 */
+    background: #0f141a; color: #e6edf5;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px;
+    overflow: hidden;
+  }
+
+  /* ---- 左：固定 240px。跨所有宽高比恒为 240，不需要断点 ---- */
+  .nav {
+    flex: 0 0 240px; min-width: 240px; max-width: 240px;
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 18px 14px; background: #141c26; border-right: 1px solid #22303f;
+  }
+  .nav .item { height: 38px; display: flex; align-items: center; gap: 10px;
+               padding: 0 12px; border-radius: 4px; color: #9fb3c8; }
+  .nav .item.on { background: rgba(23,128,155,.18); color: #cfe9f2; font-weight: 500; }
+  .nav .idx { width: 16px; font-family: Consolas, monospace; font-size: 10px; color: #5d7488; }
+
+  /* ---- 右：弹性内容（flex:1 -> Fill 权重，跨分辨率连续） ---- */
+  .content {
+    flex: 1 1 auto; min-width: 0; position: relative;
+    display: flex; flex-direction: column; gap: 12px;
+    padding: 18px 24px 96px 24px;
+  }
+
+  /* ---- 工具栏：一行按钮 + 一个 flex:1 的弹簧（弹簧也连续） ---- */
+  .toolbar { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+  .toolbar .btn { height: 32px; padding: 0 14px; border-radius: 6px;
+                  background: #1b2632; border: 1px solid #2a3a4d; color: #cfe0ee;
+                  display: flex; align-items: center; }
+  .toolbar .spacer { flex: 1 1 auto; }
+
+  /* ---- 居中块：justify-content:center + 固定宽子项（今天会被烘焙成前导 padding，
+         见 Docs/Html2UMG_ResponsiveContract.md 的"半连续"一节） ---- */
+  .centered { display: flex; justify-content: center; flex: 0 0 auto; }
+  .badge {
+    width: 320px; height: 32px; border-radius: 16px;
+    background: #1b2632; border: 1px solid #2a3a4d; color: #cfe0ee;
+    display: flex; align-items: center; justify-content: center; font-size: 13px;
+  }
+
+  /* ---- 卡片区：flex-wrap -> WrapBox。卡片固定 460px，随内容宽度自动换列 ---- */
+  .cards { display: flex; flex-wrap: wrap; gap: 16px; align-content: flex-start; }
+  .card {
+    width: 460px; flex: 0 0 460px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 14px; background: #141c26; border: 1px solid #22303f; border-radius: 8px;
+  }
+  .card h3 { font-size: 15px; font-weight: 600; color: #e6edf5; }
+
+  /* 主轴百分比：flex 行里的 62% / 其余占满 -> 两个 Fill 权重，跨分辨率连续 */
+  .ratio { display: flex; gap: 8px; height: 10px; }
+  .ratio .pct  { width: 62%; background: #17809b; border-radius: 5px; }
+  .ratio .rest { flex: 1 1 auto; background: #22303f; border-radius: 5px; }
+
+  /* 长中文段：容器宽度有界（460 - 28 padding），运行期按宽度换行 */
+  .zh { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        font-size: 14px; line-height: 22px; color: #b9c9d8; }
+
+  /* ---- 通栏长中文段：容器宽度 = 内容宽度（不给死宽），行数随分辨率变化 -> 证明运行期换行 ---- */
+  .note { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+          font-size: 14px; line-height: 22px; color: #9fb3c8; }
+
+  /* ---- 双侧 inset 浮层：left + right 同时给 -> 拉伸锚；bottom + height -> 点锚 ---- */
+  .overlay {
+    position: absolute; left: 32px; right: 32px; bottom: 24px; height: 56px;
+    display: flex; align-items: center; gap: 10px; padding: 0 16px;
+    background: rgba(23,128,155,.16); border: 1px solid #1d5f72; border-radius: 8px;
+    color: #cfe9f2;
+  }
+</style>
+</head>
+<body>
+  <aside class="nav" data-ue-name="Nav">
+    <div class="item on" data-ue-name="NavItem1"><span class="idx">01</span>系统状态</div>
+    <div class="item"><span class="idx">02</span>链路质量</div>
+    <div class="item"><span class="idx">03</span>载荷分配</div>
+    <div class="item"><span class="idx">04</span>日志</div>
+    <div class="item"><span class="idx">05</span>设置</div>
+  </aside>
+
+  <main class="content" data-ue-name="Content">
+    <div class="toolbar" data-ue-name="Toolbar">
+      <div class="btn" data-ue-name="BtnRefresh">刷新</div>
+      <div class="btn" data-ue-name="BtnExport">导出</div>
+      <div class="spacer"></div>
+      <div class="btn" data-ue-name="BtnSettings">设置</div>
+    </div>
+
+    <div class="centered" data-ue-name="CenteredRow">
+      <div class="badge" data-ue-name="CenteredBadge">居中块：justify-content center + 320px 固定宽</div>
+    </div>
+
+    <div class="cards" data-ue-name="Cards">
+      <article class="card" data-ue-name="Card0">
+        <h3>链路预算</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">链路预算在雨衰条件下会明显收缩，需要在设计阶段就把余量留够，否则一旦进入强降雨区，整条链路就会从可用跌到不可用，现场调试时再回头改天线增益已经来不及了。</p>
+      </article>
+      <article class="card" data-ue-name="Card1">
+        <h3>姿态解算</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">姿态解算依赖陀螺、加速度计与磁力计的融合，任何一种传感器的偏差都会在长时间积分后放大，因此必须做温漂补偿，并把卡尔曼滤波的协方差矩阵调到与实际噪声匹配。</p>
+      </article>
+      <article class="card" data-ue-name="Card2">
+        <h3>地图缓存</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">地图瓦片按需加载能显著降低显存占用，但预取策略过于激进时又会把带宽吃满，所以需要按飞行速度与航向提前一级预取，转弯时再降级回收，避免抖动。</p>
+      </article>
+      <article class="card" data-ue-name="Card3">
+        <h3>告警队列</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">告警必须分级并去重，否则同一根轴的两个传感器同时越限会刷出十几条重复提示，把真正需要处理的那一条埋掉，值班员在压力下很容易忽略关键信息。</p>
+      </article>
+      <article class="card" data-ue-name="Card4">
+        <h3>任务航点</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">航点的高度与速度约束要在地面站上就校验一遍，把不可达的组合直接标红，而不是等到上传之后由飞控拒绝，那样排查成本会高出一个数量级。</p>
+      </article>
+      <article class="card" data-ue-name="Card5">
+        <h3>功率余量</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">功率余量要按最坏情形评估，包括低温导致的电池内阻上升与高负载下的电压跌落，标称容量在零下十度可能只剩六成，这一点在北方冬季作业时尤其明显。</p>
+      </article>
+      <article class="card" data-ue-name="Card6">
+        <h3>地面站时钟</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">地面站与飞控的时钟必须同源，否则日志里的时间戳无法对齐，事后复盘时连因果关系都理不清，只能靠人工比对，效率极低而且容易出错。</p>
+      </article>
+      <article class="card" data-ue-name="Card7">
+        <h3>固件校验</h3>
+        <div class="ratio"><div class="pct"></div><div class="rest"></div></div>
+        <p class="zh">固件升级前要校验签名与版本兼容性，中途掉电必须能回滚到上一版，否则一次意外的断电就可能把设备刷成砖，只能返厂处理。</p>
+      </article>
+    </div>
+
+    <p class="note" data-ue-name="Note">通栏说明：这一段没有写死宽度，宽度由内容区决定，因此换行位置会随分辨率改变。链路预算、姿态解算、地图缓存、告警队列、任务航点、功率余量、地面站时钟与固件校验这八块内容，在二十一米九的屏幕上可以并排四块，在十六比九上并排三块，在四比三上只剩两块——这些都不是断点写死的，而是容器变窄之后自然挤下去的，转换器把卡片区映射成 WrapBox，运行期就会按可用宽度重新排布。</p>
+
+    <div class="overlay" data-ue-name="OverlayBar">
+      <span data-ue-name="OverlayText">双侧 inset 浮层：left 32 / right 32 -> 拉伸锚，宽度随容器连续变化</span>
+    </div>
+  </main>
+</body>
+</html>

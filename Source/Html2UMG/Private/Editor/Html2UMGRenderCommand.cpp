@@ -116,6 +116,8 @@ namespace
 		UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.ImportAndRender: importing '%s' -> '%s'"), *JsonFile, *BlueprintPath);
 
 		const bool bImported = FHtml2UMGImporter::ImportLayoutFile(JsonFile, Options, Result);
+		// Say WHY it failed before the one-line summary: a bare "1 error(s)" is not debuggable.
+		FHtml2UMGImporter::LogImportMessages(Result);
 		UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.ImportAndRender: import %s (%d created, %d reused, %d properties, %d error(s), %d warning(s))"),
 			bImported ? TEXT("SUCCESS") : TEXT("FAILED"),
 			Result.WidgetsCreated, Result.WidgetsReused, Result.PropertiesSet,

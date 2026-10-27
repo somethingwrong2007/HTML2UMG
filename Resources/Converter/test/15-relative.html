@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>15-relative — segmented size functions</title>
+<style>
+/* Probe page for Docs/Html2UMG_RelativeSize.md.
+   Four boxes, one per shape the converter has to tell apart:
+     PctBox    width:60%                          -> spacer row (fill weights 0.2 / 0.6 / 0.2)
+     RelMin    width:min(1240px, 92vw)            -> H2URelativeBox WidthPercent 0.92 MaxWidth 1240
+     RelMax    width:max(600px, 40%)              -> H2URelativeBox WidthPercent 0.40 MinWidth 600
+     RelClamp  width:clamp(320px, 50%, 900px)     -> H2URelativeBox WidthPercent 0.50 Min 320 Max 900
+   Run with --layout=responsive at 1280x720 and 1920x1080. */
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
+body {
+  background: #eef2f0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  padding-top: 40px;
+  font-family: "Noto Sans SC", "Segoe UI", sans-serif;
+  font-size: 15px;
+  color: #ffffff;
+}
+.box { height: 110px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+#pct   { width: 60%;                        background: #2f6f8f; }
+#relmin { width: min(1240px, 92vw);         background: #1f7a5c; }
+#relmax { width: max(600px, 40%);           background: #8f6a2f; }
+#relclamp { width: clamp(320px, 50%, 900px); background: #6b4f8f; }
+</style></head>
+<body>
+  <div class="box" id="pct"      data-ue-name="PctBox">width 60%</div>
+  <div class="box" id="relmin"   data-ue-name="RelMin">min(1240px, 92vw)</div>
+  <div class="box" id="relmax"   data-ue-name="RelMax">max(600px, 40%)</div>
+  <div class="box" id="relclamp" data-ue-name="RelClamp">clamp(320px, 50%, 900px)</div>
+</body></html>

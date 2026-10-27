@@ -36,6 +36,8 @@ public:
 	/** Number of texture assets this import created (vs. reused). */
 	int32 TexturesImported = 0;
 	int32 TexturesReused = 0;
+	/** Textures the importer could not turn into an asset (unsupported file, decode failure). */
+	int32 TexturesFailed = 0;
 	int32 FontsImported = 0;
 	int32 FontsReused = 0;
 
@@ -55,8 +57,38 @@ private:
 	/** Adds one typeface (Regular/Bold/...) to the family font, creating the family asset if needed. */
 	bool AddTypeface(const FH2UAssetRef& Ref, const FString& Context);
 
+	/**
+	 * Rebuilds the CJK fallback sub-typefaces of a family font (FCompositeFont::SubTypefaces)
+	 * from every layout font entry that shares the family. Idempotent: the sub-fonts this
+	 * importer created for the family are dropped first, so a reimport replaces them.
+	 * Returns the number of sub-fonts added.
+	 */
+	int32 RebuildFallbacks(UFont& FamilyFont, const FH2UAssetRef& Ref, const FString& FamilyName, const FString& Context);
+
 	/** Imports a TTF/OTF into a UFontFace asset, reusing it when it is already up to date. */
 	UObject* ImportFontFace(const FH2UAssetRef& Ref, const FString& AbsFile, const FString& Context);
+
+	/**
+	 * Content-addressed UFontFace asset name: <Prefix><family>_<weight>[_Italic]_<md5 of the file, 8 hex>.
+	 * The content hash is what keeps "same family, different file" from silently reusing the old
+	 * glyphs - a bare family+weight name did exactly that.
+	 */
+	FString MakeFaceAssetName(const FString& Prefix, const FString& BaseName, const FString& AbsFile, int32 Weight, bool bItalic) const;
+
+	/** Imports one fallback file into a UFontFace asset (content-addressed name, so it is shared by families). */
+	UObject* ImportFallbackFace(const FH2UFontFallback& Fallback, const FString& AbsFile, const FString& Context);
+
+	/** Shared body of ImportFontFace / ImportFallbackFace: import the file as FaceAssetName under OutputRoot. */
+	UObject* ImportFontFaceAs(const FString& FaceAssetName, const FString& AbsFile, const FString& Context);
+
+	/**
+	 * Face index to bind for a weight/italic inside a multi-face font file (.ttc/.otc: msyh.ttc
+	 * bundles Microsoft YaHei + Microsoft YaHei UI, msyhbd.ttc bundles the bold pair).
+	 * RequestedIndex >= 0 (layout "subFace") wins; otherwise the face whose style matches the
+	 * requested weight/italic is used, falling back to 0 with a warning that lists the faces.
+	 * Returns 0 for single-face files, which is every .ttf/.otf.
+	 */
+	int32 PickSubFaceIndex(const UObject* FontFace, int32 Weight, bool bItalic, int32 RequestedIndex, const FString& Label, const FString& Context);
 
 	/** Imports an image file into a UTexture2D asset, reusing it when it is already up to date. */
 	UTexture2D* ImportTextureFile(const FString& Key, const FString& AbsFile, const FString& Context);

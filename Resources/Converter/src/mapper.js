@@ -4,7 +4,9 @@
 // contract and from real UMG reflection names (see README "engine facts").
 'use strict';
 
+const path = require('path');
 const V = require('./values');
+const fontmetrics = require('./fontmetrics');
 const { baseName, NameRegistry } = require('./names');
 
 /** UMG class names emitted by the converter. */
@@ -29,12 +31,30 @@ const CLASS = {
   PROGRESS: 'ProgressBar',
   CHECK_BOX: 'CheckBox',
   SLIDER: 'Slider',
+  // Project widget (/Script/Html2UMGRuntime.H2URelativeBox), not engine UMG: a single-content
+  // panel that turns one percentage + a min/max clamp into a real run-time size. Emitted only by
+  // --layout=responsive, see Docs/Html2UMG_RelativeSize.md.
+  RELATIVE_BOX: 'H2URelativeBox',
+  // Project widget (/Script/Html2UMGRuntime.H2UTextWrapBox): pushes its own allotted width into an
+  // inner TextBlock's WrapTextAt, so a paragraph wraps at the width it is actually given. A plain
+  // TextBlock cannot: a VerticalBox computes desired size with no width constraint, so the block
+  // reports one line and the arranged text is clipped. Emitted only by --layout=responsive and
+  // only once the runtime control exists (see textWrapBoxMode()).
+  TEXT_WRAP_BOX: 'H2UTextWrapBox',
+  // Project widget (/Script/Html2UMGRuntime.H2UWrapBox, a UWrapBox subclass): recomputes its
+  // desired size from the width it was last arranged at, so a wrap panel's reported HEIGHT follows
+  // the run-time column count instead of the design-time WrapSize. Emitted only by
+  // --layout=responsive; exact keeps the plain WrapBox so those baselines stay byte-identical.
+  WRAP_BOX_RUNTIME: 'H2UWrapBox',
 };
 
 /** Container class -> box orientation ('v' | 'h' | 'w' for WrapBox). */
 const BOX_SLOTS = {
   [CLASS.VERTICAL]: 'v',
   [CLASS.HORIZONTAL]: 'h',
+  // The runtime wrap panel is a UWrapBox subclass, so its children are UWrapBoxSlots (same
+  // Padding/HAlign/VAlign payload); only the class name differs.
+  [CLASS.WRAP_BOX_RUNTIME]: 'w',
   [CLASS.WRAP]: 'w',
 };
 
@@ -80,20 +100,31 @@ const PX_PER_POINT = 96 / 72;
 /** Slate's default line box for a font is ~1.2em; used to derive row padding. */
 const LINE_BOX_FACTOR = 1.2;
 /**
- * The two engines define a text line box differently, and the difference accumulates.
+ * Segoe UI's metrics, used only when the font FILE could not be read (a data-URI webfont, a
+ * .ttc, a family with no file on this machine). Feeding them through the same code path as a
+ * parsed font keeps one formula instead of a second set of magic numbers.
  *
- * UMG: FTextLayout computes LineSize.Y = (MaxAboveBaseline + MaxBelowBaseline) *
- * LineHeightPercentage, i.e. the font's ascent+descent times the percentage. For the Windows UI
- * fonts this pipeline imports Slate measures that as ~1.417x the font size (a 12px Segoe UI
- * TextBlock reports a 17px desired height).
- * CSS: 'line-height: normal' uses the font's ascent+descent+lineGap, ~1.333x the font size (a
- * 12px label in the browser measures 16px tall).
- *
- * So a CSS line box must be divided by 1.4167/1.3333 = 1.0625 before it is handed to Slate, or
- * every text row comes out about a pixel too tall and drags everything below it down the page.
+ * Why the two engines disagree, and why the old 1.0625 shortcut existed:
+ *   Slate  FSlateFontRenderer::GetMaxHeight = round(FreeType face->height * ppem/upem), i.e. hhea
+ *          ascender-descender+lineGap, rounded once to whole pixels. For 12px Segoe UI that is
+ *          2724/2048*12 = 15.96 -> 16px, and UTextBlock's default ShadowOffset (1,1) added a
+ *          further 1px -> 17px. 17/12 = 1.4167 was that number, not a font property.
+ *   CSS    Chromium asks DirectWrite, which reports usWinAscent+usWinDescent plus hhea's lineGap,
+ *          and keeps it fractional: 15.96px for the same 12px text.
+ * Dividing one by the other is right for exactly one size of one font; see
+ * Docs/Html2UMG_FontMetrics.md for the measured table across fonts.
  */
-const UMG_LINE_HEIGHT_FACTOR = 1.4167;
-const CSS_NORMAL_LINE_HEIGHT_FACTOR = 1.3333;
+/** The two numbers the pre-per-font converter used for every font (kept for
+ *  --line-height-model=legacy; see Docs/Html2UMG_FontMetrics.md §2.1 for where they came from). */
+const LEGACY_SLATE_FACTOR = 1.4167; // round(1.3301*12)=16 plus the 1px ShadowOffset, over 12px
+const LEGACY_CSS_NORMAL_FACTOR = 1.3333; // 16px line box for 12px Segoe UI in Chromium
+
+const FALLBACK_FONT_METRICS = {
+  file: '(built-in Segoe UI metrics)',
+  upem: 2048,
+  hhea: { ascender: 2210, descender: -514, lineGap: 0 },
+  os2: { useTypoMetrics: false, winAscent: 2210, winDescent: 514, typoAscender: 1491, typoDescender: -431, typoLineGap: 269 },
+};
 
 class Mapper {
   constructor(options) {
@@ -123,6 +154,16 @@ class Mapper {
     if (this._warned.has(message)) return;
     this._warned.add(message);
     this.warnings.push(message);
+  }
+
+  /**
+   * A soft note that matters once but is not a defect ("this clamp is inactive at the design
+   * size"). The mapper has no separate notes channel, so it uses the file's existing
+   * `note:`-prefixed warning convention - visible in layout.warnings, and --strict makes the
+   * caller decide whether that is a failure.
+   */
+  infoOnce(message) {
+    this.warn(/^(note|info):/.test(message) ? message : `note: ${message}`);
   }
 
   // ---------------------------------------------------------------- geometry
@@ -228,8 +269,13 @@ class Mapper {
       zIndex: cs.zIndex !== undefined ? Number(cs.zIndex) || 0 : 0,
       opacity: cs.opacity !== undefined ? Number(cs.opacity) : 1,
       visibility: cs.visibility || 'visible',
-      fixedWidth: declPx('width'),
-      fixedHeight: declPx('height'),
+      // A grid track with a px size is the cell's width: UMG sizes a column from its content, so
+      // without this a 148px track collapsed to the 83px the nav needed.
+      fixedWidth: rec.h2uGridTrackWidth !== undefined ? rec.h2uGridTrackWidth : declPx('width'),
+      fixedHeight:
+        rec.h2uFlowHeight !== undefined
+          ? rec.h2uFlowHeight
+          : declPx('height'),
       percentWidth: declPercent('width'),
       percentHeight: declPercent('height'),
       minWidth: declPx('min-width'),
@@ -258,6 +304,12 @@ class Mapper {
       gridRowStart: cs.gridRowStart,
     };
 
+    // A table cell has no width of its own; the browser distributes the table's width over the
+    // columns. UMG has no such pass, so the measured cell width is pinned. Without it every
+    // cell sizes to its content and the columns do not line up between rows.
+    if (cs.display === 'table-cell' && style.fixedWidth === null && rec.rect && rec.rect[2] >= 1) {
+      style.fixedWidth = V.round(rec.rect[2], 2);
+    }
     style.bgImage = V.parseBackgroundImage(cs.backgroundImage);
     style.bgSize = V.parseBackgroundSize(cs.backgroundSize);
     // CSS px sizes honour box-sizing; a UMG SizeBox always sizes the border box,
@@ -321,10 +373,11 @@ class Mapper {
       this.warn(`unsupported: ::before/::after content on '${label}' dropped`);
     }
     if (cs.position === 'sticky') this.warn(`unsupported: position:sticky on '${label}' treated as static`);
-    // <svg>/<img> report overflow:hidden by user-agent default; that is not a
-    // design decision and they are leaves anyway.
-    if ((cs.overflowX === 'hidden' || cs.overflowY === 'hidden') && rec.tag !== 'svg' && rec.tag !== 'img') {
-      this.warn(`unsupported: overflow:hidden clipping on '${label}' (children are not clipped)`);
+    // overflow:hidden is mapped onto UMG's Clipping (see the border builder), so it is only worth
+    // a note when the element has no box of its own to clip against.
+    const hides = cs.overflowX === 'hidden' || cs.overflowY === 'hidden';
+    if (hides && rec.tag !== 'svg' && rec.tag !== 'img') {
+      this.warn(`mapped: overflow:hidden on '${label}' -> Clipping on its Border`);
     }
     if (cs.direction === 'rtl') this.warn(`unsupported: direction:rtl on '${label}' converted left-to-right`);
     if (rec.shadow) this.warn(`unsupported: shadow DOM inside '${label}' is not converted`);
@@ -354,6 +407,30 @@ class Mapper {
     if (!root) throw new Error('mapper: <body> produced no widget');
 
     if (this.opts.scaleBox) {
+      // ScaleBox scales its child to the space it is given, using the child's
+      // DESIRED size as the design extent. Wrapping <body> directly hands it the
+      // body's content-driven size (for a fixed-size design that is the panel's
+      // own box, not 1920x1080), so ScaleBox scaled the layout UP and the design
+      // came out 27% wrong at its own size. The design extent has to be pinned
+      // first: SizeBox(viewport) -> ScaleBox -> design.
+      const viewport = (this.snapshot.viewport || this.snapshot.designViewport || {});
+      const designW = Number(viewport.width) || 1920;
+      const designH = Number(viewport.height) || 1080;
+      const sizeName = this.names.unique(`${root.name}_DesignSize`);
+      const size = {
+        name: sizeName,
+        class: CLASS.SIZE_BOX,
+        source: 'cli:--scale-box',
+        variable: false,
+        properties: {
+          WidthOverride: V.round(designW, 2),
+          bOverride_WidthOverride: true,
+          HeightOverride: V.round(designH, 2),
+          bOverride_HeightOverride: true,
+        },
+        children: [root],
+      };
+      this.meta.set(size, { synthetic: true, style: null, rec: null, kind: 'sizebox' });
       const name = this.names.unique(`${root.name}_ScaleBox`);
       const wrapper = {
         name,
@@ -361,12 +438,21 @@ class Mapper {
         source: 'cli:--scale-box',
         variable: false,
         properties: { Stretch: this.opts.scaleBox.stretch, StretchDirection: 'Both' },
-        children: [root],
+        children: [size],
       };
       this.meta.set(wrapper, { synthetic: true, style: null, rec: null, kind: 'scalebox' });
       root = wrapper;
     }
     this.assignSlots(root);
+    // Only worth a line when the canvas rule actually fired somewhere: on a page with no such
+    // parent the mechanism is inert and the note would just be noise (it also keeps those pages'
+    // exact output byte-identical to the pre-change converter).
+    if (this._canvasBaked && this._centerKept && this._centerKept.length) {
+      const sample = this._centerKept.slice(0, 3).join("', '");
+      this.infoOnce(
+        `note: ${this._centerKept.length} element(s) stay cross-axis centred inside a fixed-size parent that is not the page canvas (e.g. '${sample}'); centring follows the widget's own size there and stays correct at any viewport`
+      );
+    }
     return root;
   }
 
@@ -383,6 +469,120 @@ class Mapper {
     }
   }
 
+  /**
+   * Cross-axis offset for a text widget inside a flex row, from the browser's own measurement.
+   *
+   * CSS positions a short item in a taller row by `align-items` (baseline / center / end). Slate's
+   * box slots can only stretch the widget (Fill) or push it against one edge, so a baseline-aligned
+   * unit label ends up at the top of the row: 03-dashboard's `.statUnit` renders 15px above where
+   * the browser draws it. The browser already computed the right offset, so use it: VerticalAlign
+   * Top plus that much top padding places the widget exactly where the browser had it, whatever
+   * the row's alignment was.
+   *
+   * Returns `{ paddingTop }` or null when the situation does not apply.
+   */
+  crossAxisTextOffset(parent, pmeta, cmeta, slot) {
+    const parentClass = parent && parent.class;
+    if (parentClass !== CLASS.HORIZONTAL && parentClass !== CLASS.WRAP) return null;
+    // Already centred by the slot (CSS `align-items: center` or the line-height centring path): the
+    // widget is where it belongs, and adding a top padding on top of that would push it down again.
+    // 05-controls' `Check_Text` labels are exactly this case (VAlign=Center already, offset 23/52/81
+    // is the row's cumulative position, not a padding).
+    if (slot && slot.VerticalAlignment === 'Center') return null;
+    if (cmeta && cmeta.textVerticalCenter) return null;
+    const rec = cmeta && cmeta.rec;
+    const style = cmeta && cmeta.style;
+    const pstyle = pmeta && pmeta.style;
+    if (!rec || !rec.rect || !rec.prect || !style || !pstyle) return null;
+    // The DOM parent must be the row this widget sits in. A `label.check` nested inside a flex
+    // *column* has `prect` pointing at the column, so its "offset from the parent" is a cumulative
+    // position (23/52/81 = one row stride apart) and applying it pushes the text down. Only a
+    // horizontal parent makes the vertical offset an alignment.
+    const parentDisplay = String(pstyle.display || 'block');
+    const parentDirection = String(pstyle.flexDirection || 'row');
+    const parentIsRow = (/flex|grid/.test(parentDisplay) && parentDirection === 'row') ||
+      (/^inline/.test(parentDisplay) && !/flex|grid/.test(parentDisplay));
+    if (!parentIsRow) return null;
+    // `align-items: baseline` is the common case here and Slate cannot express it at all; the other
+    // values are honoured by the slot already, but applying the measured offset reproduces them
+    // exactly as well (it is what the browser did), so no alignment needs special-casing.
+    const pad = pstyle.padding || [0, 0, 0, 0];
+    const border = pstyle.borderWidth || [0, 0, 0, 0];
+    const contentTop = rec.prect[1] + pad[1] + border[1];
+    const contentHeight = rec.prect[3] - pad[1] - pad[3] - border[1] - border[3];
+    const ownHeight = rec.rect[3];
+    if (!(contentHeight > 0) || !(ownHeight > 0)) return null;
+    // Only when the browser made the widget clearly shorter than its row's content box.
+    if (ownHeight + 0.5 >= contentHeight) return null;
+    // Single-line labels only. A multi-line block that happens to be shorter than its row is a
+    // different situation (the element itself wraps), and its "offset" is usually the row's
+    // cumulative position: 05-controls' Check_Text is a 42px two-line label, and treating its 23px
+    // as padding pushed it 23px down (2.53% -> 4.77% on that page).
+    const linePx = V.parsePx(style.lineHeight) || (style.fontSize > 0 ? style.fontSize * 1.35 : 0);
+    if (linePx > 0 && ownHeight > linePx * 1.6) {
+      this.warn(
+        `text: '${this.label(rec)}' is ${V.round(ownHeight / linePx, 1)} line boxes tall (${V.round(ownHeight, 1)}px); multi-line text is aligned by its own box, offset not applied`
+      );
+      return null;
+    }
+    const offset = rec.rect[1] - contentTop;
+    if (!Number.isFinite(offset)) return null;
+    if (offset <= 0.01) return null; // already at the top: nothing to compensate
+    if (offset > contentHeight - ownHeight + 0.5) return null; // not a sane offset, leave it alone
+    // A cross-axis offset can never be a third of the row: that shape is a *cumulative* position
+    // (a row wrapper that is taller than its text), not an alignment. Bail out and leave a trail.
+    if (offset > contentHeight * 0.45) {
+      this.warn(
+        `text: '${this.label(rec)}' offset ${V.round(offset, 1)}px exceeds 45% of its row (${V.round(contentHeight, 1)}px); treated as cumulative position, slot left alone`
+      );
+      return null;
+    }
+    const lineBox = this.cssLineBoxPx(style, null, rec, null);
+    if (lineBox > 0 && Math.abs(offset - (contentHeight - lineBox) / 2) > 2) {
+      this.warn(
+        `text: '${this.label(rec)}' is ${V.round(contentHeight - ownHeight, 1)}px shorter than its row and offset ${V.round(offset, 1)}px (not centred); slot uses the measured offset`
+      );
+    }
+    return { paddingTop: V.round(offset, 2) };
+  }
+
+  /**
+   * Centre a control's label inside its (taller) box.
+   *
+   * CSS centres a <button>'s text (UA default `align-items:center`), and authors do the same to a
+   * plain element with `line-height == height`. Slate's TextBlock always paints from the TOP of its
+   * geometry, and a control slot hands the label the whole content area, so the text ends up glued
+   * to the top: the reference design's Apply/Cancel/Reset buttons drew their ink 11px above where
+   * the browser has it (browser rows 819-831, UMG 808-820).
+   *
+   * Only the *vertical* alignment changes; horizontal centring stays Slate's Justification. Guards:
+   * the label must be a single line (a paragraph would be pushed off-centre), the box must be
+   * clearly taller than the line box (> 1.5x), and the parent must be a self-drawn control or the
+   * element must use the `line-height == height` idiom. Table cells never take this path (their
+   * parent is a Border, and that was already ruled out as a text-alignment problem).
+   */
+  controlLabelCentering(parent, pmeta, cmeta, slot) {
+    if (!slot || !cmeta || cmeta.kind !== 'text') return false;
+    if (slot.VerticalAlignment === 'Center' || cmeta.textVerticalCenter) return false;
+    if (cmeta.textSingleLine === false) return false;
+    const rec = cmeta.rec;
+    const style = cmeta.style || {};
+    if (!rec || !rec.rect) return false;
+    const controlClasses = new Set([CLASS.BUTTON, CLASS.CHECKBOX, CLASS.RADIO, CLASS.EDITABLE, CLASS.COMBO]);
+    const parentIsControl = !!(parent && controlClasses.has(parent.class));
+    const pad = style.padding || [0, 0, 0, 0];
+    const border = style.borderWidth || [0, 0, 0, 0];
+    const contentHeight = rec.rect[3] - pad[1] - pad[3] - border[1] - border[3];
+    const lineBox = cmeta.textLineBoxPx;
+    if (!(contentHeight > 0) || !(lineBox > 0)) return false;
+    const authored = V.parsePx(style.lineHeight);
+    const lineHeightCentred = authored !== null && authored > 0 && Math.abs(authored - contentHeight) <= 2;
+    if (!parentIsControl && !lineHeightCentred) return false;
+    if (!(contentHeight > lineBox * 1.5)) return false;
+    slot.VerticalAlignment = 'Center';
+    return true;
+  }
+
   makeSlot(parent, pmeta, child, cmeta, index, count) {
     const slot = this.rawSlot(parent, pmeta, child, cmeta, index, count);
     // CSS centres a single line with `line-height == box height`. UMG's TextBlock
@@ -391,6 +591,35 @@ class Mapper {
     // (border/sizebox/…) or for a row's cross axis. On a VerticalBox the vertical
     // alignment is the flow axis, so applying it there would re-centre something
     // the flex layout already placed.
+    // A text widget that the browser's flex row made *shorter* than the row is aligned by CSS
+    // (baseline / center / end), and Slate's row slot can only stretch or push it to one edge.
+    // Rather than guess the alignment, reuse the offset the browser itself produced: Top + that
+    // padding reproduces baseline alignment exactly (03-dashboard's ".statRow/statUnit" unit sits
+    // 15px below the row top because it is baseline-aligned with a 26px value, not centred).
+    if (slot && cmeta && cmeta.kind === 'text' && Object.prototype.hasOwnProperty.call(slot, 'VerticalAlignment')) {
+      // NOTE: the slot has to be passed in — the "already centred" guard reads its VerticalAlignment,
+      // and without it a Centre slot was silently overwritten (06-native's Row_Text: Center -> Top+23).
+      const crossStretchFix = this.crossAxisTextOffset(parent, pmeta, cmeta, slot);
+      if (crossStretchFix) {
+        slot.VerticalAlignment = 'Top';
+        const pad = Array.isArray(slot.Padding) ? slot.Padding.slice() : [0, 0, 0, 0];
+        pad[1] = crossStretchFix.paddingTop;
+        slot.Padding = pad;
+        return slot;
+      }
+    }
+    // responsive: give a text widget the container's width instead of its measured width, so the
+    // run-time allotted width is what decides the line breaks (no baked WrapTextAt).
+    if (slot && cmeta && cmeta.kind === 'text' && this.responsiveMode() &&
+        parent && parent.class === CLASS.VERTICAL &&
+        Object.prototype.hasOwnProperty.call(slot, 'HorizontalAlignment')) {
+      const style = cmeta.style || {};
+      if (style.fixedWidth === null || style.fixedWidth === undefined) slot.HorizontalAlignment = 'Fill';
+    }
+    // A control's label (button / check / input) is centred by CSS; Slate paints from the top.
+    if (slot && cmeta && Object.prototype.hasOwnProperty.call(slot, 'VerticalAlignment')) {
+      if (this.controlLabelCentering(parent, pmeta, cmeta, slot)) return slot;
+    }
     if (slot && cmeta && cmeta.textVerticalCenter && Object.prototype.hasOwnProperty.call(slot, 'VerticalAlignment')) {
       const parentClass = parent.class;
       const verticalIsCrossAxis = parentClass === CLASS.HORIZONTAL || parentClass === CLASS.WRAP;
@@ -408,6 +637,64 @@ class Mapper {
         slot.VerticalAlignment = 'Center';
       }
     }
+    // UMG's SizeBox clamps Min/MaxDesiredSize only while computing the *desired* size
+    // (SBox.cpp:146-158); OnArrangeChildren (SBox.cpp:187+) hands the child its allotted geometry
+    // untouched. A min/max-width element inside a Fill slot therefore ignores its clamp at run
+    // time - worth one line rather than a silent difference from the browser.
+    if (this.responsiveMode() && slot && slot.Size && cmeta && cmeta.style && cmeta.rec && cmeta.rec.rect) {
+      const s = cmeta.style;
+      const rec = cmeta.rec;
+      // Which axis does this Fill slot stretch? boxSlot() only weights the MAIN axis, so a
+      // VerticalBox Fill is a height and a HorizontalBox Fill is a width. The old check always
+      // read the width clamp, which on a column tested the wrong axis.
+      const parentMeta = this.meta.get(parent) || {};
+      const verticalBox = parent && parent.class === CLASS.VERTICAL;
+      const horizontalBox = parent && parent.class === CLASS.HORIZONTAL;
+      const axes = [];
+      if (verticalBox) axes.push({ key: 'height', isWidth: false });
+      else if (horizontalBox) axes.push({ key: 'width', isWidth: true });
+      else axes.push({ key: 'width', isWidth: true }, { key: 'height', isWidth: false });
+      // When the child itself carries an H2URelativeBox, the clamp is the box's job (it is exact at
+    // run time), so the Fill slot must stay: dropping it would starve the box of the space it
+    // measures.
+    if (slot.Size.SizeRule === 'Fill' && parentMeta.kind !== 'relbox' && cmeta.kind !== 'relbox') {
+        const pad = s.padding || [0, 0, 0, 0];
+        const border = s.borderWidth || [0, 0, 0, 0];
+        for (const axis of axes) {
+          const prefix = axis.isWidth ? 'Width' : 'Height';
+          const minKey = axis.isWidth ? 'minWidth' : 'minHeight';
+          const maxKey = axis.isWidth ? 'maxWidth' : 'maxHeight';
+          const hasMax = s[maxKey] !== null && s[maxKey] !== undefined && s[maxKey] > 0;
+          const hasMin = s[minKey] !== null && s[minKey] !== undefined && s[minKey] > 0;
+          // `min-width:0` is a no-op, not a 0px clamp ("no clamp" is how CSS reads it), and a 0px
+          // `max-*` is a degenerate box no design has.
+          const clamp = hasMax ? s[maxKey] : hasMin ? s[minKey] : null;
+          if (clamp === null) continue;
+          const clampName = hasMax ? maxKey : minKey;
+          const i = axis.isWidth ? 0 : 1;
+          const measured = rec.rect[i + 2] - pad[i] - pad[i + 2] - border[i] - border[i + 2];
+          const active = Math.abs(measured - clamp) <= 1;
+          if (active) {
+            // The clamp is what the browser actually used, so it must survive into the game. UMG's
+            // SizeBox only clamps the *desired* size (SBox.cpp:146-158; OnArrangeChildren hands over
+            // the allotted geometry), so the widget has to sit in a desired-driven slot, not Fill.
+            slot.Size = { SizeRule: 'Automatic' };
+            this._clampKeeping = this._clampKeeping || [];
+            this._clampKeeping.push(this.label(rec));
+            this.warn(
+              `layout: '${this.label(rec)}' is clamped by ${clampName.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())} (${V.round(clamp, 1)}px) at the design size; dropped its Fill slot so the SizeBox clamp still applies at runtime`
+            );
+          } else {
+            this._clampInactive = this._clampInactive || [];
+            this._clampInactive.push(this.label(rec));
+            this.infoOnce(
+              `layout: ${clampName.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())} on '${this.label(rec)}' is inactive at the design size (${V.round(measured, 1)}px vs ${V.round(clamp, 1)}px); its Fill slot will ignore the clamp at runtime`
+            );
+          }
+          break; // one axis decides the slot: dropping Fill is all-or-nothing
+        }
+      }
+    }
     return slot;
   }
 
@@ -416,7 +703,7 @@ class Mapper {
     if (orientation) return this.boxSlot(pmeta, cmeta, index, orientation);
     switch (parent.class) {
       case CLASS.CANVAS:
-        return this.canvasSlot(cmeta);
+        return this.canvasSlot(cmeta, pmeta);
       case CLASS.GRID:
         return this.gridSlot(pmeta, cmeta, index);
       case CLASS.UNIFORM_GRID:
@@ -426,6 +713,9 @@ class Mapper {
       case CLASS.SCROLL_BOX:
       case CLASS.BUTTON:
       case CLASS.OVERLAY:
+        // A responsive-centred container records the alignment it wants for its single child;
+        // everything else stays stretched.
+        return (cmeta && cmeta.overlaySlot) || { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
       // UBackgroundBlurSlot carries the same alignment pair (it is a UContentWidget like
       // Border), so a blurred element's child gets the same single-child slot.
       case CLASS.BACKGROUND_BLUR:
@@ -437,12 +727,147 @@ class Mapper {
         // UScaleBoxSlot has no Padding (only the deprecated field), so only the
         // alignment members are legal here.
         return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+      case CLASS.RELATIVE_BOX:
+        // Single-content project panel: it derives the child's size from the space it is given and
+        // aligns the child itself (ContentHAlign/ContentVAlign), so the child always fills.
+        return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+      case CLASS.TEXT_WRAP_BOX:
+        // Single-content project panel: the inner TextBlock takes the whole allotted area and is
+        // told that width as its WrapTextAt.
+        return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
       default:
         return null;
     }
   }
 
   // ------------------------------------------------------------------- slots
+  /**
+   * The free space CSS puts *before* the first child of a flex container, in px.
+   *
+   * `justify-content: center / end / space-around / space-evenly` distributes the leftover space,
+   * but Slate has no equivalent: a box slot's alignment only acts inside the width the child was
+   * *allotted*, and an Automatic child is allotted exactly its desired width, so the leftover space
+   * is silently dropped and every child ends up at the start. A real design hit this: the page body
+   * is `display:flex; justify-content:center` around a 1240px panel, the browser puts it at x=340,
+   * the widget at x=0 - the whole panel 340px to the left.
+   *
+   * The browser already measured the answer, so read it back: the first child's main-axis start
+   * minus the parent's content-box start is exactly the leading space (it also covers
+   * `space-around`/`space-evenly`, which `measureMainGaps()` leaves at 0 for the first child).
+   * Later children follow from gap + Automatic sizing, so only index 0 needs it.
+   *
+   * Returns `{ extra, axis }` (extra = px still to add on top of the slot's current main padding)
+   * or null. Guards: WrapBox/Grid never wrap this way; a flex-grow child fills the space itself;
+   * a leading space of more than half the content box means the measurement is probably wrong.
+   */
+  justifyLeadingOffset(parent, pmeta, cmeta, index, orientation, slot) {
+    if (orientation !== 'h' && orientation !== 'v') return null; // WrapBox has its own wrapping
+    if (index !== 0) return null;
+    const pstyle = (pmeta && pmeta.style) || {};
+    const justify = String(pstyle.justify || 'normal');
+    if (!/^(center|end|flex-end|right|space-around|space-evenly)$/.test(justify)) return null;
+    if (slot && slot.Size && slot.Size.SizeRule === 'Fill') return null; // flex-grow fills it anyway
+    const parentRec = pmeta && pmeta.rec;
+    const rec = cmeta && cmeta.rec;
+    if (!parentRec || !parentRec.rect || !rec || !rec.rect) return null;
+    const vertical = orientation === 'v';
+    const axis = vertical ? 1 : 0;
+    const pad = pstyle.padding || [0, 0, 0, 0];
+    const border = pstyle.borderWidth || [0, 0, 0, 0];
+    const contentStart = parentRec.rect[axis] + pad[axis] + border[axis];
+    const size = vertical
+      ? parentRec.rect[3] - pad[1] - pad[3] - border[1] - border[3]
+      : parentRec.rect[2] - pad[0] - pad[2] - border[0] - border[2];
+    if (!(size > 0)) return null;
+    const leading = rec.rect[axis] - contentStart;
+    if (!Number.isFinite(leading) || leading <= 0.5) return null;
+    // "leading > half the row" is what a *cumulative* offset looks like... but it is also exactly
+    // what `justify-content: flex-end` does to a small child: the free space all ends up in front
+    // of it. Tell the two apart by predicting the end-aligned position from the measured sizes;
+    // a right-aligned switch (leading 338 of a 380px row, child 42 wide) is legitimate, while a
+    // stray 120px inside a 200px row is not.
+    const childSize = vertical ? rec.rect[3] : rec.rect[2];
+    const endOffset = size - childSize;
+    const endAligned = Math.abs(leading - endOffset) <= 2;
+    if (!endAligned && leading > size * 0.5) {
+      this.warn(
+        `slot: '${this.label(rec)}' leading space ${V.round(leading, 1)}px is neither end-aligned (${V.round(endOffset, 1)}px) nor under half of its ${justify} parent (${V.round(size, 1)}px); not applied`
+      );
+      return null;
+    }
+    const already = (slot && Array.isArray(slot.Padding) ? slot.Padding[axis] : 0) || 0;
+    const extra = V.round(leading - already, 2);
+    return extra > 0.01 ? { extra, axis } : null;
+  }
+
+  /**
+   * The parent's declared content-box extent on an axis, in px - or null when it is not fixed.
+   *
+   * Only a px declaration counts: `height:100%` / `auto` / a flex-grown parent really does
+   * re-centre its children when the viewport changes, so `Center` stays correct there. A fixed px
+   * parent keeps the browser's layout box whatever the window is (and clips), which is what
+   * exact mode has to reproduce.
+   */
+  fixedContentExtent(pmeta, axis) {
+    const decl = (pmeta && pmeta.rec && pmeta.rec.decl) || {};
+    const px = V.parsePx(axis === 0 ? decl.width : decl.height);
+    return px !== null && px > 0 ? px : null;
+  }
+
+  /**
+   * Is this element the page canvas - the box that carries the design size instead of following
+   * the window?
+   *
+   * Decided from the probe measurements, not by guessing: it has to cover the whole design
+   * viewport AND keep that size at every probed viewport. <body> qualifies by definition. A
+   * `height:100%` wrapper covers the viewport but shrinks with the probes, so its children really
+   * do re-centre; a `height:38px` row never covers it.
+   *
+   * Only the canvas qualifies: its children are laid out against the design height, so a
+   * cross-axis `Center` inside it would re-centre them against a window CSS never gave them.
+   */
+  designCanvasParent(pmeta) {
+    const rec = pmeta && pmeta.rec;
+    if (!rec || !rec.rect) return false;
+    if (rec.tag === 'body') return true;
+    const viewport = this.snapshot.viewport || this.snapshot.designViewport || {};
+    const vw = Number(viewport.width) || 0;
+    const vh = Number(viewport.height) || 0;
+    if (!(vw > 0) || !(vh > 0)) return false;
+    if (Math.abs(rec.rect[2] - vw) > 1 || Math.abs(rec.rect[3] - vh) > 1) return false;
+    const series = this.samples.get(rec.i);
+    if (!series) return true;
+    return series.x.every((s) => Math.abs(s.size - rec.rect[2]) <= 1) &&
+      series.y.every((s) => Math.abs(s.size - rec.rect[3]) <= 1);
+  }
+
+  /**
+   * A child's measured cross-axis offset inside its parent's content box, in px, or null.
+   *
+   * Same idea as justifyLeadingOffset() but on the cross axis: reuse the position the browser
+   * produced instead of the alignment keyword that would only reproduce it at one size.
+   */
+  crossAxisMeasuredOffset(pmeta, cmeta, axis, currentPadding) {
+    const rec = cmeta && cmeta.rec;
+    if (!rec || !rec.rect) return null;
+    const prect = rec.prect || (pmeta && pmeta.rec && pmeta.rec.rect);
+    if (!prect) return null;
+    const pstyle = (pmeta && pmeta.style) || {};
+    const pad = pstyle.padding || [0, 0, 0, 0];
+    const border = pstyle.borderWidth || [0, 0, 0, 0];
+    const contentStart = prect[axis] + pad[axis] + border[axis];
+    const contentSize = prect[axis + 2] - pad[axis] - pad[axis + 2] - border[axis] - border[axis + 2];
+    if (!(contentSize > 0)) return null;
+    const own = rec.rect[axis + 2];
+    const already = (currentPadding && currentPadding[axis]) || 0;
+    const offset = rec.rect[axis] - contentStart - already;
+    if (!Number.isFinite(offset) || offset <= 0.5) return null;
+    // An offset larger than the free space is not an alignment (it would push the child past the
+    // parent's far edge), so leave the slot alone.
+    if (offset > Math.max(0, contentSize - own) + 1) return null;
+    return V.round(offset, 2);
+  }
+
   boxSlot(pmeta, cmeta, index, orientation) {
     const pstyle = (pmeta && pmeta.style) || {};
     const style = (cmeta && cmeta.style) || {};
@@ -463,7 +888,13 @@ class Mapper {
     } else {
       // The gap only exists *between* children and only on the main axis:
       // column-like boxes grow downward (Top), row-like boxes rightward (Left).
-      const mainGap = index > 0 ? (vertical ? pstyle.rowGap || 0 : pstyle.columnGap || 0) : 0;
+      //
+      // WrapBox is the exception: its gap is UWrapBox::InnerSlotPadding, which the panel itself
+      // applies between items (see containerProperties). Emitting it here as well doubled every
+      // card pitch - measured on 12-responsive: browser 476 = 460 + 16, UMG 492 = 460 + 32, so
+      // four cards drifted 48px. One source only.
+      const gapInSlot = orientation !== 'w';
+      const mainGap = (gapInSlot && index > 0) ? (vertical ? pstyle.rowGap || 0 : pstyle.columnGap || 0) : 0;
       usedMainGap = mainGap;
       out.Padding = vertical
         ? [V.round(margin[0], 2), V.round(margin[1] + mainGap, 2), V.round(margin[2], 2), V.round(margin[3], 2)]
@@ -476,7 +907,12 @@ class Mapper {
     //   3. otherwise               -> Automatic (desired size)
     // A Fill slot with Value 0 collapses to zero in Slate (SBoxPanel skips
     // distribution when the total stretch coefficient is 0), so never emit that.
-    const grow = style.flexGrow || 0;
+    //
+    // A spacer row's synthetic spacers carry their weight on the meta because their slot is
+    // recomputed here, after wrapCrossAxisPercent() wrote it: without this the spacers came out
+    // SizeRule=Automatic (0px wide) and the child took the whole row instead of N% of it.
+    const forcedFill = (cmeta && cmeta.fillWeight > 0) ? cmeta.fillWeight : 0;
+    const grow = forcedFill > 0 ? forcedFill : (style.flexGrow || 0);
     const mainPercent = vertical ? style.percentHeight : style.percentWidth;
     if (orientation !== 'w') {
       if (grow > 0) {
@@ -486,6 +922,13 @@ class Mapper {
       } else {
         out.Size = { SizeRule: 'Automatic' };
       }
+    }
+
+    // Free space before the first child (justify-content: center/end/space-*), measured.
+    // The slot's own alignment cannot express it - see justifyLeadingOffset().
+    const leading = this.justifyLeadingOffset(null, pmeta, cmeta, index, orientation, out);
+    if (leading) {
+      out.Padding[leading.axis] = V.round((out.Padding[leading.axis] || 0) + leading.extra, 2);
     }
 
     const justify = pstyle.justify || 'normal';
@@ -500,9 +943,72 @@ class Mapper {
     // WidthOverride/HeightOverride, so a flow element with a fixed CSS size was stretched to
     // the full canvas. Use the start alignment instead - the SizeBox then reports the size
     // the design asked for, and still shrinks when the parent is narrower.
-    const explicitOnCross = vertical ? style.fixedWidth !== null : style.fixedHeight !== null;
+    // A synthetic node (spacer row) has no readStyle() style object, so test for a real number:
+    // `undefined !== null` would make the spacer look like an explicitly sized child.
+    const hasCrossSize = vertical
+      ? style.fixedWidth !== null && style.fixedWidth !== undefined
+      : style.fixedHeight !== null && style.fixedHeight !== undefined;
+    const explicitOnCross = hasCrossSize;
     if (crossAlign === 'Fill' && explicitOnCross) {
       crossAlign = vertical ? 'Left' : 'Top';
+    }
+    // A synthetic wrapper that measures the space it is given has to BE given all of it: the
+    // spacer row's Fill weights only mean "fraction of the parent" at the parent's full width, and
+    // H2URelativeBox must see the whole extent of the axis it sizes. Their own centring is encoded
+    // inside the wrapper (spacer weights / ContentHAlign), not in this slot.
+    const wrapper = cmeta && cmeta.kind;
+    if (wrapper === 'pct-spacer') crossAlign = 'Fill';
+    if (wrapper === 'pct-row' && vertical) crossAlign = 'Fill';
+    if (wrapper === 'relbox' && cmeta.rel) {
+      const wantsW = !!(cmeta.rel.width && cmeta.rel.width.percent > 0);
+      const wantsH = !!(cmeta.rel.height && cmeta.rel.height.percent > 0);
+      if (vertical) {
+        if (wantsW) crossAlign = 'Fill';
+        if (wantsH) out.Size = { Value: 1, SizeRule: 'Fill' };
+      } else {
+        if (wantsH) crossAlign = 'Fill';
+        if (wantsW) out.Size = { Value: 1, SizeRule: 'Fill' };
+      }
+      if ((vertical && wantsH) || (!vertical && wantsW)) {
+        this.infoOnce(
+          `layout: '${this.label(cmeta.rec)}' is sized by a relative function on the ${vertical ? 'column' : 'row'} main axis; its slot takes the remaining space so the box can measure it`
+        );
+      }
+    }
+    // --- exact: a fixed-size parent must not re-centre when the viewport changes --------------
+    // CSS keeps laying out against the parent's declared extent. With `body{height:1080px}` and
+    // `align-items:center` the panel is at y=204 whether the window is 1080 or 720 tall (at 720 it
+    // is simply clipped). A cross-axis Center slot re-centres at run time instead: measured y=25
+    // instead of 204 at 1280x720, 25.76% page diff (Docs/Html2UMG_Anchoring.md §1.4 explains the
+    // same effect on the main axis). The browser already measured the offset, so bake it exactly
+    // like justifyLeadingOffset() does - only when the parent declares a px extent on that axis.
+    // Containers only: a text widget's own height follows the width it wraps at, so `Center`
+    // keeps it centred when it re-wraps, while a baked offset would not (and crossAxisTextOffset()
+    // already owns the text cases).
+    if (!this.responsiveMode() && crossAlign === 'Center' && (!cmeta || cmeta.kind !== 'text')) {
+      const axis = vertical ? 0 : 1;
+      const fixed = this.fixedContentExtent(pmeta, axis);
+      if (fixed !== null) {
+        // ...but ONLY inside the page canvas. A row that declares `height:38px` keeps that height at
+        // every resolution, so `Center` inside it already follows the widget's own size and stays
+        // correct: baking the measured offset there changed 17 slots and cost 0.12% at the design
+        // size (Slate's text height differs slightly from the browser's line box, and centring
+        // absorbs that difference while a frozen number cannot).
+        if (this.designCanvasParent(pmeta)) {
+          const offset = this.crossAxisMeasuredOffset(pmeta, cmeta, axis, out.Padding);
+          if (offset !== null) {
+            out.Padding[axis] = V.round((out.Padding[axis] || 0) + offset, 2);
+            crossAlign = vertical ? 'Left' : 'Top';
+            this._canvasBaked = (this._canvasBaked || 0) + 1;
+            this.warn(
+              `mapped: '${this.label(cmeta && cmeta.rec)}' is centred on the cross axis of the page canvas (fixed ${vertical ? 'width' : 'height'} ${V.round(fixed, 1)}px); baked Padding.${['Left', 'Top'][axis]}=${V.round(offset, 1)} instead of ${vertical ? 'Horizontal' : 'Vertical'}Alignment=Center so it does not re-centre at another viewport size`
+            );
+          }
+        } else if (cmeta && cmeta.rec) {
+          this._centerKept = this._centerKept || [];
+          this._centerKept.push(this.label(cmeta.rec));
+        }
+      }
     }
     // A Fill slot must ALSO say Fill on the main axis.
     //
@@ -514,7 +1020,9 @@ class Mapper {
     // wide where the browser has 1236px and 618px. Declaring the main axis Fill as well made the
     // render match the browser and dropped that page from 13.01% to 6.02%.
     const fillMain = out.Size && out.Size.SizeRule === 'Fill';
-    const mainFillAlign = fillMain ? 'Fill' : mainAlign;
+    // The leading padding already puts the child where the browser had it; centring or right-
+    // aligning the slot *inside* the padded area would move it a second time.
+    const mainFillAlign = fillMain ? 'Fill' : leading ? (vertical ? 'Top' : 'Left') : mainAlign;
     if (vertical) {
       out.HorizontalAlignment = crossAlign;
       out.VerticalAlignment = mainFillAlign;
@@ -548,15 +1056,18 @@ class Mapper {
     return out;
   }
 
-  canvasSlot(cmeta) {
+  canvasSlot(cmeta, pmeta) {
     const rec = cmeta && cmeta.rec;
     const style = (cmeta && cmeta.style) || null;
 
     if (cmeta && cmeta.isFlowGroup) {
+      // The canvas spans the padding box (see canvasPad); the flow content belongs in the content
+      // box, so re-apply the padding here instead of leaving the offsets at zero.
+      const pad = (pmeta && pmeta.canvasPad) || [0, 0, 0, 0];
       return {
         LayoutData: {
           Anchors: { Minimum: [0, 0], Maximum: [1, 1] },
-          Offsets: { Left: 0, Top: 0, Right: 0, Bottom: 0 },
+          Offsets: { Left: pad[0], Top: pad[1], Right: pad[2], Bottom: pad[3] },
           Alignment: [0, 0],
         },
         // UCanvasPanelSlot's reflected bool keeps its b-prefix (the UPROPERTY is
@@ -565,7 +1076,10 @@ class Mapper {
       };
     }
 
-    const samples = rec ? this.samples.get(rec.i) : null;
+    // The canvas now spans the parent's PADDING box (= border box minus border), so sample positions
+    // (which are border-box relative) have to lose the border and the parent extent has to shrink by
+    // it. With no border on the container this is a no-op, which is why most pages are unaffected.
+    const samples = this.withCanvasBorder(rec ? this.samples.get(rec.i) : null, pmeta && pmeta.canvasBorder);
     const insets = rec ? this.declaredInsets(rec) : null;
     const xAxis = this.axisPlacement('x', insets, style, samples, rec);
     const yAxis = this.axisPlacement('y', insets, style, samples, rec);
@@ -853,8 +1367,14 @@ class Mapper {
       column = index % columns;
     }
     const margin = style.margin || [0, 0, 0, 0];
-    const halfGapX = (pstyle.columnGap || 0) / 2;
-    const halfGapY = (pstyle.rowGap || 0) / 2;
+    // UMG's GridPanel has no gap. Half a gap on every side of every cell looks symmetric but is
+    // wrong at the edges: on a two-column grid it pushed the first column 22px right and took 44px
+    // off its width (measured: a 148px rail came out 83px wide and the second column started 43px
+    // early). A gap only exists BETWEEN tracks, so it goes on the trailing edge of every cell
+    // except the last one.
+    const trackCount = Math.max(1, (pstyle.gridColumns || []).length);
+    const gapRight = column < trackCount - 1 ? (pstyle.columnGap || 0) : 0;
+    const gapBottom = (pstyle.rowGap || 0);
     return {
       Row: row,
       Column: column,
@@ -862,10 +1382,10 @@ class Mapper {
       ColumnSpan: 1,
       Layer: 0,
       Padding: [
-        V.round(margin[0] + halfGapX, 2),
-        V.round(margin[1] + halfGapY, 2),
-        V.round(margin[2] + halfGapX, 2),
-        V.round(margin[3] + halfGapY, 2),
+        V.round(margin[0], 2),
+        V.round(margin[1], 2),
+        V.round(margin[2] + gapRight, 2),
+        V.round(margin[3] + gapBottom, 2),
       ],
       HorizontalAlignment: 'Fill',
       VerticalAlignment: 'Fill',
@@ -913,6 +1433,36 @@ class Mapper {
   fontMapFor(rec, inherited) {
     const raw = (rec.ue || {})['font-map'];
     if (!raw) return inherited;
+    // --font-map=ignore (the default): never point a TextBlock at a project font asset. The
+    // reference design maps "Cascadia Mono" / "Consolas" onto /Game/MenuSystem/... assets, which
+    // is both a licensing question and a "this design only renders in that project" problem.
+    // Ignoring the map lets the families resolve through @font-face / the system table instead.
+    if (this.fontMapMode() === 'ignore') {
+      this._ignoredFontMap = this._ignoredFontMap || [];
+      const text = String(raw).trim();
+      const entries = [];
+      if (text.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(text);
+          for (const key of Object.keys(parsed)) entries.push([key, String(parsed[key])]);
+        } catch (err) {
+          entries.push([text.slice(0, 40), '(invalid JSON)']);
+        }
+      } else {
+        for (const pair of text.split(/[;,]/)) {
+          const eq = pair.indexOf('=');
+          if (eq > 0) entries.push([pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()]);
+        }
+      }
+      for (const [family, target] of entries) {
+        this._ignoredFontMap.push({ family, target });
+        // Deliberately no '/Game/...' in the message: an imported design must not carry a single
+        // reference to the authoring project, and this line lands in layout.warnings.
+        const assetName = String(target).split(/[./]/).filter(Boolean).pop() || target;
+        this.warn(`font: ignoring data-ue-font-map "${family}" -> project asset ${assetName} (--font-map=ignore)`);
+      }
+      return inherited;
+    }
     const map = new Map(inherited || []);
     const text = String(raw).trim();
     if (text.startsWith('{')) {
@@ -965,7 +1515,10 @@ class Mapper {
     // CSS content padding twice (Border.Padding + the style's own padding).
     const selfPainted = SELF_BOX_KINDS.has(kind);
     const wantsBorder = !selfPainted && (style.hasVisualBox || style.hasPadding);
-    const crossPercent = this.crossAxisPercentPx(rec, style, ctx.orientation);
+    // --layout=responsive: a size that only the runtime can resolve (min()/max()/clamp(), or a
+    // percentage that carries a min/max clamp) becomes one H2URelativeBox instead of a px pin.
+    const relPlan = this.responsiveMode() ? this.relativeBoxPlan(rec, style, ctx.orientation) : null;
+    const crossPercent = this.crossAxisPercentPx(rec, style, ctx.orientation, relPlan);
     const wantsSize =
       !ctx.isRoot &&
       (style.fixedWidth !== null ||
@@ -1031,7 +1584,31 @@ class Mapper {
           2
         )
       );
-      if (inset.some((v) => v !== 0)) border.properties = { Padding: inset };
+      // A CanvasPanel must sit on the element's PADDING box: that is what CSS measures an absolutely
+      // positioned child's insets against (border box minus border). So when this element hosts a
+      // canvas, the Border must NOT consume the CSS padding - its content area IS the padding box -
+      // and the flow group re-applies the padding as its own canvas-slot offsets (canvasPad).
+      // Growing the canvas back out with negative slot padding is not an option: Slate clamps a
+      // negative FMargin, so the canvas stayed on the content box and only the flow drifted +24/+18.
+      const contentMeta = node ? this.meta.get(node) : null;
+      const hostsCanvas = !!(contentMeta && contentMeta.kind === 'canvas' && style.position !== 'static');
+      if (hostsCanvas) {
+        contentMeta.canvasBorder = (style.borderWidth || [0, 0, 0, 0]).slice();
+        const pad = inset.map((v, i) => V.round(v - (style.borderWidth[i] || 0), 2));
+        if (pad.some((v) => v !== 0)) contentMeta.canvasPad = pad;
+        const borderOnly = [0, 1, 2, 3].map((i) => V.round(style.borderWidth[i] || 0, 2));
+        if (borderOnly.some((v) => v !== 0)) border.properties = { Padding: borderOnly };
+      } else if (inset.some((v) => v !== 0)) {
+        border.properties = { Padding: inset };
+      }
+      // overflow:hidden is a clip, and UMG can do it: Clipping on the widget that owns the bounds.
+      // Without this a table inside a rounded panel, or any list inside a fixed-height card, spills
+      // its children outside the box the design drew. auto/scroll already became a ScrollBox.
+      const clips = (value) => value === 'hidden' || value === 'clip';
+      if (clips(style.overflowX) || clips(style.overflowY)) {
+        border.properties = border.properties || {};
+        border.properties.Clipping = 'ClipToBounds';
+      }
       if (node) border.children = [node];
       this.meta.set(border, { rec, style, kind: 'border' });
       node = border;
@@ -1060,19 +1637,56 @@ class Mapper {
       const shadowExtents = this.shadowExtentsOf(style);
       if (shadowExtents) {
         const [left, top, right, bottom] = shadowExtents;
+        // The design's measured box is a perfectly good size to grow from, so an element without
+        // an explicit CSS width/height can still reserve room for its shadow.
+        const measured = rec && rec.rect ? rec.rect : null;
         if (box.properties.bOverride_WidthOverride) {
           box.properties.WidthOverride = V.round(box.properties.WidthOverride + left + right, 2);
+        } else if (measured && measured[2] >= 1) {
+          box.properties.WidthOverride = V.round(measured[2] + left + right, 2);
+          box.properties.bOverride_WidthOverride = true;
         } else {
-          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no fixed width, so the shadow is clipped horizontally`);
+          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no measurable width, so the shadow is clipped horizontally`);
         }
         if (box.properties.bOverride_HeightOverride) {
           box.properties.HeightOverride = V.round(box.properties.HeightOverride + top + bottom, 2);
+        } else if (measured && measured[3] >= 1) {
+          box.properties.HeightOverride = V.round(measured[3] + top + bottom, 2);
+          box.properties.bOverride_HeightOverride = true;
         } else {
-          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no fixed height, so the shadow is clipped vertically`);
+          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no measurable height, so the shadow is clipped vertically`);
         }
       }
       if (node) box.children = [node];
       this.meta.set(box, { rec, style, kind: 'sizebox', overhang: this.sliderOverhang.get(rec.i) || 0 });
+      node = box;
+    }
+
+    // The relative-size box is the OUTERMOST wrapper: it must be what its container allots space
+    // to, because it derives the content's size from that allotment (see
+    // Docs/Html2UMG_RelativeSize.md). A SizeBox cannot stand in for it - SBox clamps the
+    // *desired* size only and hands its child the allotted geometry untouched (SBox.cpp:146-158
+    // vs :187+), so `min-width`/`max-width` inside a Fill slot is silently ignored at run time.
+    if (relPlan && node) {
+      const box = this.makeNode(this.names.unique(`${rootName}_Rel`), CLASS.RELATIVE_BOX, rec, true);
+      box.properties = this.relativeBoxProperties(relPlan, rec);
+      // The provisional px pin crossAxisPercentPx() emitted for a declarative `width:92%` is dead
+      // weight now: the box owns that axis, and a WidthOverride under a Fill slot is ignored by
+      // Slate anyway. Dropping it keeps a design-size number from freezing into the asset.
+      if (node.class === CLASS.SIZE_BOX && node.properties) {
+        if (relPlan.width) {
+          delete node.properties.WidthOverride;
+          delete node.properties.bOverride_WidthOverride;
+        }
+        if (relPlan.height) {
+          delete node.properties.HeightOverride;
+          delete node.properties.bOverride_HeightOverride;
+        }
+        if (!Object.keys(node.properties).length) delete node.properties;
+      }
+      box.children = [node];
+      this.meta.set(box, { rec, style, kind: 'relbox', rel: relPlan });
+      this.warn(`mapped: '${this.label(rec)}' keeps its ${[relPlan.width ? `width:${relPlan.width.expr}` : null, relPlan.height ? `height:${relPlan.height.expr}` : null].filter(Boolean).join(' and ')} as H2URelativeBox (${this.relativeBoxSummary(relPlan)})`);
       node = box;
     }
 
@@ -1085,31 +1699,313 @@ class Mapper {
     return node;
   }
 
+  // ------------------------------------------------------- relative size (responsive)
+  /**
+   * Reduce one axis of this element to `{ percent, minPx, maxPx }`, or null.
+   *
+   * Only three shapes need the runtime box, and they are the same shape:
+   *   width:min(1240px, 92vw)      signed segmented min()
+   *   width:clamp(320px, 50%, 900px)
+   *   width:92%; max-width:1240px  the declarative spelling of min(1240px, 92%)
+   * Everything else stays on the old paths (a plain percentage -> spacer row / Fill weight, a
+   * plain px -> SizeBox), so nothing that already works changes representation.
+   */
+  relativeSizeOfAxis(rec, axis) {
+    const decl = (rec && rec.decl) || {};
+    const label = this.label(rec);
+    const minName = axis === 'width' ? 'min-width' : 'min-height';
+    const maxName = axis === 'width' ? 'max-width' : 'max-height';
+    const raw = decl[axis];
+    if (raw === undefined || raw === null) return null;
+    const text = String(raw).trim();
+    if (!text || /^(auto|none|initial|unset|inherit|revert|fit-content|max-content|min-content)$/i.test(text)) {
+      return null;
+    }
+    const parsed = V.parseRelativeSize(text);
+    if (!parsed) {
+      // A value we cannot reduce still has to be *reported*: silently falling back to the design
+      // size is exactly the failure mode this task exists to remove.
+      if (/^(min|max|clamp|calc|var|env)\s*\(/i.test(text)) {
+        this.warn(
+          `relative-size: ${text} at '${label}' falls back to the design-size branch (only min(px,%|vw), max(px,%|vw) and clamp(px,%,px) reduce to one box)`
+        );
+      }
+      return null;
+    }
+    if (parsed.percent === null) {
+      this.warn(
+        `relative-size: ${text} at '${label}' is a constant ${V.round(parsed.px, 2)}px; the design-size branch is used for it`
+      );
+      return null;
+    }
+    if (!(parsed.percent > 0)) return null;
+    const clampOf = (name) => {
+      const value = decl[name];
+      if (value === undefined || value === null) return null;
+      const body = String(value).trim();
+      if (!body || /^(auto|none)$/i.test(body)) return null;
+      const px = V.parsePx(body);
+      if (px !== null) return px;
+      const rel = V.parseRelativeSize(body);
+      if (rel && rel.px !== undefined) return rel.px;
+      if (rel && rel.percent !== null) {
+        this.warn(`relative-size: ${name} on '${label}' is itself a percentage (${body}); the percentage of '${axis}' wins and this clamp is dropped`);
+        return null;
+      }
+      if (/^(min|max|clamp|calc|var|env)\s*\(/i.test(body)) {
+        this.warn(`relative-size: ${name} on '${label}' (${body}) cannot be reduced to one px clamp; the design-size branch is used for it`);
+      }
+      return null;
+    };
+    const minPx = parsed.minPx !== null ? parsed.minPx : clampOf(minName);
+    const maxPx = parsed.maxPx !== null ? parsed.maxPx : clampOf(maxName);
+    if (parsed.unit && parsed.unit !== '%') {
+      this.warn(
+        `note: ${text} at '${label}' is ${Math.round(parsed.percent * 100)}% of the viewport (${parsed.unit}); H2URelativeBox measures the space it is given, so the two agree only while the parent spans the viewport`
+      );
+    }
+    return {
+      percent: parsed.percent,
+      minPx: minPx !== null ? minPx : null,
+      maxPx: maxPx !== null ? maxPx : null,
+      expr: text,
+      unit: parsed.unit || '%',
+    };
+  }
+
+  /**
+   * The axes that need an H2URelativeBox, or null when neither does.
+   *
+   * A percentage that carries no clamp is NOT one of them: the cross axis is already continuous as
+   * a spacer row and the main axis as a Fill weight, and both are cheaper than a runtime widget.
+   */
+  relativeBoxPlan(rec, style, orientation) {
+    if (!rec) return null;
+    const keeps = (axis) => !!(axis && axis.percent > 0 && (axis.minPx !== null || axis.maxPx !== null));
+    /**
+     * H2URelativeBox sizes its content from the space it is ALLOTTED, so it may only take an axis
+     * where "allotted" means "the parent's extent on that axis":
+     *   - the CROSS axis of a box panel: yes (the slot allots the panel's full cross size);
+     *   - the MAIN axis of a box panel: NO. A Fill share is a fraction of the *remaining* space,
+     *     not of the parent, so the box would apply the percentage to an already-divided share
+     *     (41% of 41%). The existing Fill weight + SizeBox clamp stays there, which is the
+     *     documented half-continuous case (Docs/Html2UMG_ResponsiveContract.md §1.2/§6.4);
+     *   - a GridPanel cell, a SingleChild slot, the WBP root: yes (the cell/slot is the parent);
+     *   - a CanvasPanel: no, axisPlacement() already expresses percentages as stretch anchors.
+     */
+    const allowed = (axis) => {
+      if (orientation === 'v') return axis === 'width';
+      if (orientation === 'h') return axis === 'height';
+      if (orientation === 'w') return false;
+      if (orientation === 'canvas') return false;
+      return true;
+    };
+    const width = this.relativeSizeOfAxis(rec, 'width');
+    const height = this.relativeSizeOfAxis(rec, 'height');
+    const keepWidth = keeps(width) && allowed('width');
+    const keepHeight = keeps(height) && allowed('height');
+    if ((keeps(width) && !keepWidth) || (keeps(height) && !keepHeight)) {
+      this.warn(
+        `note: '${this.label(rec)}' has a clamped percentage on its container's main axis; it is left to the SizeBox clamp because a Fill share is not a fraction of the parent (see Docs/Html2UMG_RelativeSize.md §4)`
+      );
+    }
+    const plan = { width: keepWidth ? width : null, height: keepHeight ? height : null };
+    return plan.width || plan.height ? plan : null;
+  }
+
+  /**
+   * H2URelativeBox properties (/Script/Html2UMGRuntime.H2URelativeBox).
+   *
+   *   WidthPercent/HeightPercent   0..1; 0 means "no percentage" (a genuine 0px size stays a
+   *                                SizeBox WidthOverride=0)
+   *   Min/MaxWidth/Min/MaxHeight   px; <= 0 means "no clamp"
+   *   ContentHAlign/ContentVAlign  0 = left/top, 0.5 = centred, 1 = right/bottom
+   * The box hands its child that size and aligns it inside the space it was allotted.
+   */
+  relativeBoxProperties(plan, rec) {
+    const props = {};
+    if (plan.width) {
+      props.WidthPercent = V.round(plan.width.percent, 4);
+      if (plan.width.minPx !== null && plan.width.minPx > 0) props.MinWidth = V.round(plan.width.minPx, 2);
+      if (plan.width.maxPx !== null && plan.width.maxPx > 0) props.MaxWidth = V.round(plan.width.maxPx, 2);
+    }
+    if (plan.height) {
+      props.HeightPercent = V.round(plan.height.percent, 4);
+      if (plan.height.minPx !== null && plan.height.minPx > 0) props.MinHeight = V.round(plan.height.minPx, 2);
+      if (plan.height.maxPx !== null && plan.height.maxPx > 0) props.MaxHeight = V.round(plan.height.maxPx, 2);
+    }
+    // Alignment is only meaningful on an axis the box actually sizes: on an axis with no rule the
+    // content simply gets the whole allotted extent. Emitting it only there also keeps the value
+    // from wobbling with unrelated content height (a measured offset inside an overflowing parent
+    // is not an alignment).
+    if (plan.width) props.ContentHAlign = this.contentAlignOf(rec, 0);
+    if (plan.height) props.ContentVAlign = this.contentAlignOf(rec, 1);
+    return props;
+  }
+
+  relativeBoxSummary(plan) {
+    const parts = [];
+    for (const [key, prefix] of [['width', 'Width'], ['height', 'Height']]) {
+      const axis = plan[key];
+      if (!axis) continue;
+      parts.push(`${prefix}Percent ${V.round(axis.percent, 4)}`);
+      if (axis.minPx !== null && axis.minPx > 0) parts.push(`Min${prefix} ${V.round(axis.minPx, 2)}`);
+      if (axis.maxPx !== null && axis.maxPx > 0) parts.push(`Max${prefix} ${V.round(axis.maxPx, 2)}`);
+    }
+    return parts.join(', ');
+  }
+
+  /**
+   * Where the browser put the element across its parent's free space, as 0 / 0.5 / 1.
+   *
+   * The runtime box can only say "left / centre / right", so it has to be told which one the
+   * design used; the measurement is the only source that knows (justify/align + auto margins +
+   * absolute offsets all collapse into the same three outcomes).
+   */
+  contentAlignOf(rec, axis) {
+    if (!rec || !rec.rect || !rec.prect) return 0;
+    const prect = rec.prect;
+    const parent = this.byIndex.get(rec.p);
+    let start = prect[axis];
+    let extent = prect[axis + 2];
+    if (parent) {
+      const cs = parent.cs || {};
+      const near = axis === 0
+        ? (V.parsePx(cs.paddingLeft) || 0) + (V.parsePx(cs.borderLeftWidth) || 0)
+        : (V.parsePx(cs.paddingTop) || 0) + (V.parsePx(cs.borderTopWidth) || 0);
+      const far = axis === 0
+        ? (V.parsePx(cs.paddingRight) || 0) + (V.parsePx(cs.borderRightWidth) || 0)
+        : (V.parsePx(cs.paddingBottom) || 0) + (V.parsePx(cs.borderBottomWidth) || 0);
+      start += near;
+      extent -= near + far;
+    }
+    const free = extent - rec.rect[axis + 2];
+    if (!(free > 1)) return 0; // no room to align in
+    const ratio = V.clamp((rec.rect[axis] - start) / free, 0, 1);
+    if (ratio <= 0.2) return 0;
+    if (ratio >= 0.8) return 1;
+    return 0.5;
+  }
+
   /**
    * CSS percentages on the *cross* axis of a box container have no UMG
    * equivalent (a box slot only weights the main axis), so they are pinned to the
    * measured size — never left as Automatic, which would collapse to zero.
    * Percentages on the main axis become Fill weights in boxSlot().
    */
-  crossAxisPercentPx(rec, style, orientation) {
+  crossAxisPercentPx(rec, style, orientation, relPlan) {
     if (orientation !== 'v' && orientation !== 'h' && orientation !== 'w') return null;
     const out = {};
     const label = this.label(rec);
     const widthIsMain = orientation === 'h';
     const heightIsMain = orientation === 'v';
+    // A column's cross axis is width, and responsive mode prefers a wrapper there (spacer row or
+    // H2URelativeBox). The pin is still emitted FIRST and only stripped by the wrapper that
+    // actually replaces it: suppressing it up front is what silently dropped the width - when the
+    // wrapper did not materialise the element kept neither a Fill weight nor a WidthOverride and
+    // collapsed to its text width (probe: `width:60%` came out with only HeightOverride left).
+    const deferred = this.responsiveMode() && orientation === 'v';
     if (style.percentWidth !== null && !widthIsMain && style.percentWidth < 0.995) {
       out.width = V.round(rec.rect[2], 2);
-      this.warn(
-        `approximated: width:${Math.round(style.percentWidth * 100)}% on '${label}' pinned to ${out.width}px — UMG box slots have no cross-axis weight`
-      );
+      if (!deferred && !(relPlan && relPlan.width)) {
+        this.warn(
+          `approximated: width:${Math.round(style.percentWidth * 100)}% on '${label}' pinned to ${out.width}px — UMG box slots have no cross-axis weight`
+        );
+      }
     }
     if (style.percentHeight !== null && !heightIsMain && style.percentHeight < 0.995) {
       out.height = V.round(rec.rect[3], 2);
-      this.warn(
-        `approximated: height:${Math.round(style.percentHeight * 100)}% on '${label}' pinned to ${out.height}px — UMG box slots have no cross-axis weight`
-      );
+      if (!(relPlan && relPlan.height)) {
+        this.warn(
+          `approximated: height:${Math.round(style.percentHeight * 100)}% on '${label}' pinned to ${out.height}px — UMG box slots have no cross-axis weight`
+        );
+      }
     }
     return Object.keys(out).length ? out : null;
+  }
+
+  /**
+   * Express a column child's `width: N%` as a spacer row.
+   *
+   * A box slot only weights the MAIN axis, so a percentage on a column's width used to be pinned to
+   * the measured pixels - correct at the design width and wrong at every other one (the fluid
+   * reference page went 1.17% at 1920 and 9.56% at 1280 for exactly this reason). Slate's Fill
+   * weights are proportional, so the same intent can be spelled as a HorizontalBox row:
+   *
+   *     [spacer Fill=left]  [child Fill=N%]  [spacer Fill=right]
+   *
+   * which reflows at any width and never depends on a desired size.
+   */
+  wrapCrossAxisPercent(child) {
+    const meta = this.meta.get(child);
+    const style = meta && meta.style;
+    const rec = meta && meta.rec;
+    const pct = style && style.percentWidth;
+    if (!rec || !style || !(pct > 0.001) || pct >= 0.999) return null;
+    // H2URelativeBox owns this axis itself (percentage AND clamp); wrapping it in spacers would
+    // undo the clamp.
+    if (meta.kind === 'relbox') return null;
+    if (!rec.rect || !rec.prect || !(rec.prect[2] > 0)) return null;
+    const free = Math.max(0, 1 - pct);
+    let left = free / 2; // CSS default is start-aligned; use the measured offset when it is clear
+    const measuredLeft = (rec.rect[0] - rec.prect[0]) / rec.prect[2];
+    if (Number.isFinite(measuredLeft)) {
+      left = V.clamp(measuredLeft, 0, free);
+    }
+    const right = Math.max(0, free - left);
+    const wrapName = this.names.unique(`${child.name}_PctWrap`);
+    const spacer = (weight, side) => {
+      if (!(weight > 0.0005)) return null;
+      const node = this.makeNode(this.names.unique(`${wrapName}_${side}`), CLASS.SIZE_BOX, undefined);
+      node.children = [];
+      // No brush and no child: the spacer is pure weight. The weight ALSO lives on the meta
+      // because boxSlot() recomputes this slot in assignSlots(), which used to overwrite the Fill
+      // rule back to Automatic and collapse the spacer to 0px.
+      node.slot = { Size: { SizeRule: 'Fill', Value: V.round(weight, 4) }, HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+      this.meta.set(node, { synthetic: true, style: null, rec: null, kind: 'pct-spacer', fillWeight: weight });
+      return node;
+    };
+    const row = this.makeNode(wrapName, CLASS.HORIZONTAL, rec);
+    // The row spans the PARENT's content width, not the element's own box, so claiming the
+    // element as its `source` would make a geometry audit compare two different rects (same
+    // reason the flow group drops it).
+    delete row.source;
+    row.children = [spacer(left, 'L'), child, spacer(right, 'R')].filter(Boolean);
+    child.slot = { Size: { SizeRule: 'Fill', Value: V.round(pct, 4) }, HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+    // The provisional px pin crossAxisPercentPx() emitted is dead weight now: the Fill weight is
+    // what sizes the child, and a frozen WidthOverride inside a Fill slot is ignored by Slate
+    // anyway. Removing it keeps the asset free of a design-size number.
+    if (child.class === CLASS.SIZE_BOX && child.properties) {
+      delete child.properties.WidthOverride;
+      delete child.properties.bOverride_WidthOverride;
+      if (!Object.keys(child.properties).length) delete child.properties;
+    }
+    this.meta.set(row, { rec, style, kind: 'pct-row' });
+    this.warn(
+      `mapped: width:${Math.round(pct * 100)}% on '${this.label(rec)}' expressed as a spacer row (Fill ${V.round(left, 3)} / ${V.round(pct, 3)} / ${V.round(right, 3)})`
+    );
+    return row;
+  }
+
+  /**
+   * The spacer row could not be built, so the px pin crossAxisPercentPx() emitted stays.
+   *
+   * Say so out loud: a percentage that quietly turns into either nothing (the old bug - no Fill
+   * weight, no WidthOverride, the element collapses to its text width) or an unexplained frozen
+   * number is worse than an explained approximation.
+   */
+  pinCrossAxisPercent(child) {
+    const meta = this.meta.get(child);
+    const style = meta && meta.style;
+    const rec = meta && meta.rec;
+    if (!meta || meta.kind === 'relbox' || meta.kind === 'pct-row') return child;
+    if (!style || style.percentWidth === null || style.percentWidth === undefined) return child;
+    if (!(style.percentWidth > 0.001) || style.percentWidth >= 0.995) return child;
+    if (!rec || !rec.rect) return child;
+    this.warn(
+      `approximated: width:${Math.round(style.percentWidth * 100)}% on '${this.label(rec)}' pinned to ${V.round(rec.rect[2], 2)}px — the spacer row needs a column child with a measurable parent width`
+    );
+    return child;
   }
 
   /** `data-ue-widget`, or `data-ue-class` holding an asset path. Null when inlining. */
@@ -1236,6 +2132,10 @@ class Mapper {
     if (this.isTextOnly(rec)) return 'text';
     if (style.display === 'grid' || style.display === 'inline-grid') return 'grid';
     if (style.display === 'flex' || style.display === 'inline-flex') return 'flex';
+    // A table is a column of rows, but a ROW is a horizontal line of cells. Left
+    // unhandled, <tr> fell through to the block path and stacked its cells vertically,
+    // which made every table ten times too tall.
+    if (style.display === 'table-row') return 'tablerow';
     if (this.absChildCount(rec) > 0) return 'canvas';
     return 'block';
   }
@@ -1397,17 +2297,56 @@ class Mapper {
     }
 
     const node = this.makeNode(name, CLASS.TEXT, rec);
+    const fontProps = this.fontProperties(textRec, textStyle, ctx.fontMap, text);
+    // "What the browser did not wrap, do not wrap."
+    //
+    // A short CJK label (the nav's 图形 / 音频 ...) is one line in the browser and its box is
+    // content-driven, but with AutoWrapText + AllowPerCharacterWrapping + an Automatic slot width
+    // it folds one character per line the moment Slate's allotted width is a fraction narrower
+    // than its own measurement - which is exactly what the UMG designer shows. Turning wrapping
+    // off for that shape is structural (it cannot fold at any preview size) instead of tuning a
+    // tolerance. Block text that really wraps keeps AutoWrapText + WrapTextAt (see wrapTextAt()).
+    // No second condition on purpose: the earlier "content-driven width" requirement missed the
+    // nav's 16px `nav-idx` SizeBox (its width comes from the box, not the text), and "01" still
+    // folded into two lines as soon as the allotted width was a fraction narrow.
+    const browserLines = this.textLineCount(rec, style, fontProps, text);
+    const noWrapByDesign = browserLines === 1;
+    const autoWrap = !/^nowrap/.test(style.whiteSpace) && !noWrapByDesign;
     const props = {
       Text: text,
-      Font: this.fontProperties(textRec, textStyle, ctx.fontMap),
+      Font: fontProps,
       ColorAndOpacity: textStyle.color,
       Justification: mapJustifyText(style.textAlign),
-      AutoWrapText: !/^nowrap/.test(style.whiteSpace),
+      AutoWrapText: autoWrap,
     };
+    // UTextBlock's default ShadowOffset is (1,1) with a transparent colour, and
+    // FSlateTextRun::GetMaxHeight adds |ShadowOffset.Y| to every line box whether the shadow is
+    // visible or not. Clearing it makes the line box the font's own metric again, which is what
+    // CSS 'line-height: normal' measures (and it puts the baseline back where the browser has it).
+    // legacy/default models keep the engine default and count the pixel in the line box instead.
+    const shadow = parseTextShadow(textStyle.textShadow);
+    const keepShadow = this.keepUmgShadow(shadow);
+    if (!keepShadow) props.ShadowOffset = shadow ? shadow.offset : [0, 0];
+    if (shadow) props.ShadowColorAndOpacity = shadow.color;
+    const shadowY = shadow ? Math.abs(shadow.offset[1] || 0) : keepShadow ? 1 : 0;
+    // The width Slate may wrap at. AutoWrapText alone never wraps here: these text blocks sit in
+    // absolute CanvasPanel slots, so desired size never sees a bounded width, and UMG only binds
+    // WrapTextAt when it is non-zero. See wrapTextAt().
+    if (autoWrap) {
+      // responsive: no baked wrap width - the run-time allotted width decides, so the text
+      // reflows inside the game instead of being frozen at the design width.
+      const wrapWidth = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, fontProps, text);
+      if (wrapWidth > 0) props.WrapTextAt = wrapWidth;
+      // A space-less CJK run has no break point Slate's line breaker will use, so allow the
+      // per-character fallback. Latin text is unaffected unless a single word is wider than the box.
+      if (this.cjkBreakMode() !== 'none') props.WrappingPolicy = 'AllowPerCharacterWrapping';
+    }
     // `line-height` means two different things and they must not be mixed:
     //   * line-height == box height on a single line -> the author wanted vertical
     //     centring; UMG cannot centre inside a TextBlock, so the slot does it.
     //   * otherwise it is line spacing -> TextBlock.LineHeightPercentage.
+    // Both cases still need the value: without it a 24px line box in a 24px design row renders
+    // as Slate's natural 21px box, which is the "16px title 24 -> 22" the geometry dump found.
     const lineHeightPx = V.parsePx(textStyle.lineHeight);
     const verticalPadding = (style.padding ? style.padding[1] + style.padding[3] : 0);
     const boxHeight = rec && rec.rect ? rec.rect[3] - verticalPadding : 0;
@@ -1416,24 +2355,61 @@ class Mapper {
     // Only a genuinely single-run leaf text: a paragraph with inline children is a
     // wrapping block whose box the line-height did not fill.
     const centreSingleLine = singleLine && fillsBox && rec.elemKids === 0;
-    if (!centreSingleLine) {
-      // Always emitted, not only for an explicit line-height: the default deserves the
-      // correction too, because Slate's natural line box and CSS's differ (see the factors).
-      const percentage = this.lineHeightPercentage(textStyle);
-      if (percentage !== null) props.LineHeightPercentage = percentage;
-    }
-    const shadow = parseTextShadow(textStyle.textShadow);
-    if (shadow) {
-      props.ShadowOffset = shadow.offset;
-      props.ShadowColorAndOpacity = shadow.color;
-    }
+    // Always emitted, not only for an explicit line-height: the default deserves the correction
+    // too, because the two engines round the font's line box differently per font.
+    const percentage = this.lineHeightPercentage(textStyle, fontProps, shadowY, rec, text);
+    if (percentage !== null) props.LineHeightPercentage = percentage;
     if (style.textDecoration.indexOf('underline') >= 0) {
       this.warn(`unsupported: text-decoration:underline on '${this.label(rec)}' dropped`);
     }
     if (style.textOverflow === 'ellipsis') props.TextOverflowPolicy = 'Ellipsis';
     node.properties = props;
-    this.meta.set(node, { rec, style, kind: 'text', textVerticalCenter: centreSingleLine });
+    this.meta.set(node, {
+      rec,
+      style,
+      kind: 'text',
+      textVerticalCenter: centreSingleLine,
+      textSingleLine: singleLine,
+      textLineBoxPx: this.cssLineBoxPx(textStyle, fontProps, rec, text),
+      autoWrap,
+    });
+    // A paragraph that really wraps needs a container that can tell Slate how wide it is: a
+    // VerticalBox computes desired size with NO width constraint, so the block reports one line and
+    // the arranged text gets clipped (measured on 12-responsive: .zh came out 1 line, card 98px
+    // instead of 3 lines / 142px). H2UTextWrapBox feeds its allotted width into the inner block's
+    // WrapTextAt each arrange. Only paragraphs the browser actually wrapped (>= 2 lines) get the
+    // wrapper: a single-line label has no reflow to gain and the extra panel would be dead weight.
+    if (autoWrap && browserLines >= 2 && this.responsiveMode() && this.textWrapBoxMode()) {
+      return this.wrapTextForFlow(node, rec, style);
+    }
     return node;
+  }
+
+  /**
+   * Wrap a wrapping TextBlock in H2UTextWrapBox (/Script/Html2UMGRuntime.H2UTextWrapBox).
+   *
+   *   ContentPadding    [l,t,r,b] - omitted: the element's own padding is already carried by its
+   *                     Border wrapper, and DesignWrapWidth is measured *inside* it
+   *   DesignWrapWidth   the content-box width the paragraph got at the design viewport; the control
+   *                     uses it for the first frame's line count, before any arrange has happened
+   *   bAutoWrap         true (the CSS paragraph is not `white-space:nowrap`)
+   *
+   * No WrapTextAt is emitted on the inner block (it would freeze the design width); the control
+   * writes the live allotted width there instead.
+   */
+  wrapTextForFlow(node, rec, style) {
+    const box = this.makeNode(this.names.unique(`${node.name}_Wrap`), CLASS.TEXT_WRAP_BOX, rec, true);
+    box.properties = {
+      DesignWrapWidth: this.contentBoxWidth(rec, style),
+      bAutoWrap: true,
+    };
+    box.children = [node];
+    const meta = this.meta.get(node) || {};
+    this.meta.set(box, { rec, style: meta.style || null, kind: 'textwrapbox' });
+    this.warn(
+      `mapped: '${this.label(rec)}' wraps at run time via H2UTextWrapBox (DesignWrapWidth ${box.properties.DesignWrapWidth}px)`
+    );
+    return box;
   }
 
   /**
@@ -1455,14 +2431,31 @@ class Mapper {
       out = out.replace(/(^|\s)(\S)/g, (match, space, ch) => space + ch.toUpperCase());
     }
     out = out.replace(/\s+/g, ' ').trim();
+    const runFont = this.fontProperties(rec, style, ctx.fontMap, out);
+    // Same rule as buildText(): a run the browser kept on one line must never fold. An inline run
+    // like the nav's 图形 / 音频 label sits in a row with an Automatic width, so a hundredth of a
+    // pixel of extra advance is enough to stack it one character per line in the designer.
+    const runLines = this.textLineCount(rec, style, runFont, out);
+    const runAutoWrap = !/^nowrap/.test(style.whiteSpace) && !(runLines === 1 && out.indexOf('\n') < 0);
+    const runShadow = parseTextShadow(style.textShadow);
     node.properties = {
       Text: out,
-      Font: this.fontProperties(rec, style, ctx.fontMap),
+      Font: runFont,
       ColorAndOpacity: style.color,
       Justification: mapJustifyText(style.textAlign),
-      AutoWrapText: !/^nowrap/.test(style.whiteSpace),
+      AutoWrapText: runAutoWrap,
+      // Same reasoning as buildText(): UTextBlock's (1,1) default adds a pixel to every line box.
     };
-    const runPercentage = this.lineHeightPercentage(style);
+    const runKeepShadow = this.keepUmgShadow(runShadow);
+    if (!runKeepShadow) node.properties.ShadowOffset = runShadow ? runShadow.offset : [0, 0];
+    if (runShadow) node.properties.ShadowColorAndOpacity = runShadow.color;
+    if (runAutoWrap) {
+      const runWrap = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, runFont, out);
+      if (runWrap > 0) node.properties.WrapTextAt = runWrap;
+      if (this.cjkBreakMode() !== 'none') node.properties.WrappingPolicy = 'AllowPerCharacterWrapping';
+    }
+    const runShadowY = runShadow ? Math.abs(runShadow.offset[1] || 0) : runKeepShadow ? 1 : 0;
+    const runPercentage = this.lineHeightPercentage(style, runFont, runShadowY, rec, out);
     if (runPercentage !== null) node.properties.LineHeightPercentage = runPercentage;
     // The run has no box of its own: the owner's margins must not leak into its slot.
     this.meta.set(node, { rec, style: Object.assign({}, style, { margin: [0, 0, 0, 0] }), kind: 'text' });
@@ -1512,15 +2505,423 @@ class Mapper {
    * it). It is NOT a 0-100 percentage: emitting 94 here makes every line 94 times taller.
    * Returns null when the style carries no usable font size.
    */
-  lineHeightPercentage(style) {
+  lineHeightPercentage(style, fontProps, shadowOffsetY, rec, text) {
     if (!style || !(style.fontSize > 0)) return null;
+    // A computed line-height is always a px length or 'normal', so this is the CSS line box.
     const explicit = V.lineHeightToPercent(style.lineHeight, style.fontSize);
-    const cssFactor = explicit === null ? CSS_NORMAL_LINE_HEIGHT_FACTOR : explicit / 100;
-    if (!(cssFactor > 0)) return null;
-    return V.round(cssFactor / UMG_LINE_HEIGHT_FACTOR, 3);
+    const styleFactor = explicit === null ? null : explicit / 100;
+    if (this.typographyModel() === 'legacy') {
+      // Pre-per-font behaviour, kept as an A/B switch: one global Slate ratio for every font.
+      const factor = styleFactor === null ? LEGACY_CSS_NORMAL_FACTOR : styleFactor;
+      return V.round(factor / LEGACY_SLATE_FACTOR, 3);
+    }
+    // CSS side: the author line-height, or the measured line box when the text needs a fallback
+    // face (see measuredCssLineBox), or the primary font's own metric.
+    const cssBox = this.cssLineBoxPx(style, fontProps, rec, text);
+    // Slate side: the font the TextBlock is actually created with. Without a readable file, the
+    // built-in Segoe UI metrics keep the formula instead of a second set of constants.
+    const metrics = this.fontMetricsFor(fontProps) || FALLBACK_FONT_METRICS;
+    const slateBox = fontmetrics.slateLineBox(metrics, style.fontSize, { shadowOffsetY: shadowOffsetY || 0 });
+    if (!(cssBox > 0) || !(slateBox > 0)) return null;
+    return V.round(cssBox / slateBox, 4);
   }
 
-  fontProperties(rec, style, fontMap) {
+  /**
+   * The vertical metrics of the font a TextBlock will actually be drawn with.
+   *
+   * fontProperties() has already resolved the family to a font file (it is the only code that
+   * knows about data-ue-font-map, @font-face and the system font table), so this reads the file
+   * back out of the asset registry record instead of resolving the family a second time. The
+   * registry's recorded path is relative to the assets directory, and the copied file is
+   * byte-identical to the source.
+   */
+  fontMetricsFor(fontProps) {
+    if (!this._metricsByFont) this._metricsByFont = new Map();
+    if (!this._metricsByFile) this._metricsByFile = new Map();
+    const objectPath = fontProps && typeof fontProps.FontObject === 'string' ? fontProps.FontObject : '';
+    if (objectPath.charAt(0) !== '@' || !this.assets) return null;
+    const key = objectPath.slice(1);
+    if (this._metricsByFont.has(key)) return this._metricsByFont.get(key);
+    const records = this.assets.fonts || [];
+    const record = records.find((entry) => entry && entry.key === key);
+    let metrics = null;
+    if (record && record.file) {
+      const file = path.join(this.assets.outDir || '.', path.basename(record.file));
+      // A .ttc holds several faces and each has its OWN hhea/OS-2 (msyh.ttc: 1.3198 vs
+      // 1.2700 line box), so the selected sub-face index is part of the metrics identity.
+      const subface = Number.isInteger(record.subface) ? record.subface : 0;
+      const cacheKey = `${file}#${subface}`;
+      if (this._metricsByFile.has(cacheKey)) {
+        metrics = this._metricsByFile.get(cacheKey);
+      } else {
+        metrics = fontmetrics.readFontFile(file, { index: subface });
+        this._metricsByFile.set(cacheKey, metrics);
+        if (!metrics) {
+          this.warn(
+            `font: cannot read vertical metrics from '${path.basename(file)}'${subface ? ` face ${subface}` : ''}; line heights fall back to the Segoe UI model`
+          );
+        }
+      }
+    }
+    this._metricsByFont.set(key, metrics);
+    return metrics;
+  }
+
+  /**
+   * CSS content box width in px: border box minus horizontal padding and borders.
+   *
+   * This is what UMG's `WrapTextAt` has to be told. AutoWrapText only allows wrapping; the width
+   * comes from WrapTextAt, and when it is 0 the attribute is not bound at all
+   * (UMG TextWidgetTypes.h: SynchronizeTextLayoutProperties binds
+   * `WrapTextAt != 0 ? WrapTextAt : TAttribute<float>()`). Every text block here sits on a
+   * CanvasPanel with absolute offsets, so desired-size never sees a bounded width and the only
+   * way Slate can wrap is an explicit WrapTextAt.
+   */
+  contentBoxWidth(rec, style) {
+    if (!rec || !rec.rect) return 0;
+    const pad = (style && style.padding) || [0, 0, 0, 0];
+    const border = (style && style.borderWidth) || [0, 0, 0, 0];
+    const width = rec.rect[2] - (pad[0] + pad[2]) - (border[0] + border[2]);
+    return width > 0 ? V.round(width, 2) : 0;
+  }
+
+  /**
+   * WrapTextAt for a text block, or 0 when the element must not wrap.
+   *
+   * Emitted even when the browser did not wrap: a single line is unaffected (its measured width
+   * is smaller than the content box), while a line that only *nearly* fits now breaks instead of
+   * overflowing the box. `white-space: nowrap` never wraps, which is why AutoWrapText and this
+   * stay separate decisions. Set --wrap-tolerance (or HTML2UMG_WRAP_TOLERANCE) to give Slate a
+   * little slack when its glyph advances measure wider than Chromium's.
+   */
+  /**
+   * True when the element's used width comes from its content (shrink-to-fit), not from a box.
+   *
+   * An inline box, an inline-block, a float, or an absolutely positioned box with `width: auto`
+   * is only as wide as its text needs. That width is the *result* of laying the text out, so it
+   * must never be handed back to Slate as a wrap width: a fraction of a pixel of extra glyph
+   * advance then turns into an extra line (the .btn case: browser 153.73px box, Slate measured a
+   * couple of pixels wider and wrapped a one-line label into two).
+   */
+  widthIsContentDriven(rec, style) {
+    const cs = (rec && rec.cs) || {};
+    const display = String((style && style.display) || cs.display || 'block');
+    if (/^inline/.test(display)) return true;
+    if (String(cs.float || 'none') !== 'none') return true;
+    const position = String((style && style.position) || cs.position || 'static');
+    const autoWidth = !style || style.fixedWidth === null || style.fixedWidth === undefined;
+    if (autoWidth && (position === 'absolute' || position === 'fixed' || position === 'sticky')) return true;
+    return false;
+  }
+
+  /** element index -> parent record, built once from the snapshot's child lists. */
+  parentRecords() {
+    if (this._parents) return this._parents;
+    const map = new Map();
+    for (const rec of this.snapshot.elements) {
+      for (const child of rec.k || []) {
+        if (typeof child === 'number' && !map.has(child)) map.set(child, rec.i);
+      }
+    }
+    this._parents = map;
+    return map;
+  }
+
+  /**
+   * Width of the line box a text run is laid out in, in CSS px.
+   *
+   * For a block-level element that is its own content box. For shrink-to-fit boxes it is the
+   * content box of the nearest block-level ancestor, because *that* is what CSS gives the line
+   * box; the inline box's own width is just where the text happened to end.
+   */
+  wrapWidthFor(rec, style) {
+    const own = this.contentBoxWidth(rec, style);
+    if (!this.widthIsContentDriven(rec, style)) return own;
+    const parents = this.parentRecords();
+    let cursor = rec.i;
+    for (let guard = 0; guard < 64; guard += 1) {
+      const parentIndex = parents.get(cursor);
+      if (parentIndex === undefined) break;
+      const parent = this.byIndex.get(parentIndex);
+      if (!parent) break;
+      const parentStyle = this.readStyle(parent);
+      if (!this.widthIsContentDriven(parent, parentStyle)) {
+        const width = this.contentBoxWidth(parent, parentStyle);
+        return width > own ? width : own;
+      }
+      cursor = parent.i;
+    }
+    return own;
+  }
+
+  /** CSS content box height in px: border box minus vertical padding and borders. */
+  contentBoxHeight(rec, style) {
+    if (!rec || !rec.rect) return 0;
+    const pad = (style && style.padding) || [0, 0, 0, 0];
+    const border = (style && style.borderWidth) || [0, 0, 0, 0];
+    const height = rec.rect[3] - (pad[1] + pad[3]) - (border[1] + border[3]);
+    return height > 0 ? V.round(height, 2) : 0;
+  }
+
+  /** The line box this style's font predicts, in px (explicit line-height wins). */
+  modelCssLineBox(style, fontProps) {
+    const explicit = V.parsePx(style && style.lineHeight);
+    if (explicit !== null && explicit > 0) return explicit;
+    const size = style && style.fontSize > 0 ? style.fontSize : 14;
+    const metrics = this.fontMetricsFor(fontProps);
+    const mode = String(this.opts.lineBoxSnap || process.env.HTML2UMG_LINE_BOX_SNAP || 'exact').toLowerCase();
+    // 'font' = what Chromium actually uses: each of ascent/descent/lineGap rounded to a
+    // whole pixel and then added (fontmetrics.cssLineBox). The other modes keep this raw value so
+    // the snap A/B still measures snapping alone.
+    const box = metrics ? (mode === 'font' ? fontmetrics.cssLineBox(metrics, size) : fontmetrics.cssLineBoxExact(metrics, size)) : null;
+    if (box > 0) return box;
+    return LEGACY_CSS_NORMAL_FACTOR * size;
+  }
+
+  /**
+   * Does any character of this text fall outside the primary font's cmap?
+   *
+   * When it does, Chromium draws that glyph from a fallback face and the LINE BOX follows the face
+   * it really used: Segoe UI is 1.3301em but Microsoft YaHei is 1.42em and Noto Sans SC 1.448em, so
+   * a 16px "十六像素 ABC" label gets a 24px line box in the browser while the primary font alone
+   * predicts 21.31. That is why a CJK label with 'line-height: normal' used to come out 1.0-2.7px
+   * short per line. Coverage is checked against the file we actually import, so no font name is
+   * guessed here.
+   */
+  hasFallbackGlyphs(fontProps, text) {
+    if (!text || !this.assets) return false;
+    const objectPath = fontProps && typeof fontProps.FontObject === 'string' ? fontProps.FontObject : '';
+    if (objectPath.charAt(0) !== '@') return false;
+    const metrics = this.fontMetricsFor(fontProps);
+    if (!metrics || !metrics.cmap) return false;
+    if (!this._coversByFont) this._coversByFont = new Map();
+    let cache = this._coversByFont.get(objectPath);
+    if (!cache) {
+      cache = new Map();
+      this._coversByFont.set(objectPath, cache);
+    }
+    for (const ch of text) {
+      const cp = ch.codePointAt(0);
+      if (cp <= 0x7f) continue; // ASCII is the baseline every UI face covers
+      if (cache.has(cp)) {
+        if (cache.get(cp) === false) return true;
+        continue;
+      }
+      const covered = fontmetrics.covers(metrics, [cp]).missing.length === 0;
+      cache.set(cp, covered);
+      if (!covered) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The CSS line box Chromium actually laid out, in px, or null when the measurement cannot be
+   * trusted. **This is the default path**; the font-file model is only the fallback.
+   *
+   * The browser already resolved every font quirk for us — fallback faces for CJK, Consolas' huge
+   * and ignored lineGap, variable-font default instances, per-side rounding — and any of them can
+   * be 0.3-2px off when modelled from the file. Measuring costs nothing: the element's content box
+   * is a whole number of line boxes, so dividing it out gives the exact line box.
+   *
+   * Guards (all keep the model instead of the measurement):
+   *   * an authored `line-height` wins outright (the browser uses that length verbatim);
+   *   * an authored `height` says nothing about the line box (34px button around a 17px line);
+   *   * table cells are stretched by the row's tallest cell;
+   *   * the content box must be within 0.15 of a whole number of line boxes, otherwise it was
+   *     stretched by a parent (flex item, grid row) and the ratio means nothing.
+   */
+  measuredCssLineBox(rec, style, fontProps, text, modelBox) {
+    if (!rec || !rec.rect || !(modelBox > 0)) return null;
+    const explicit = V.parsePx(style && style.lineHeight);
+    if (explicit !== null && explicit > 0) return null;
+    if (style && style.fixedHeight !== null && style.fixedHeight !== undefined) return null;
+    const display = String((style && style.display) || 'block');
+    if (display === 'table-cell' || display === 'table' || display === 'inline-table') return null;
+    const contentHeight = this.contentBoxHeight(rec, style);
+    if (!(contentHeight > 0)) return null;
+    const raw = contentHeight / modelBox;
+    // A box shorter than half a line is clipped/collapsed, not a line count. Above that the
+    // integer tolerance below decides: a face whose modelled line box is 15% wrong (Consolas, .ttc
+    // faces, variable fonts) still lands within 0.15 of a whole line box and must be believed.
+    if (raw < 0.5) return null;
+    const lines = Math.max(1, Math.round(raw));
+    if (Math.abs(raw - lines) > 0.15) return null; // stretched box, keep the model
+    const measured = contentHeight / lines;
+    // Only believe the measurement when it *contradicts* the model by a measurable amount.
+    //
+    // The faces whose modelled line box is wrong are all off by a lot: Consolas 12px is 2.1px off
+    // (Chrome ignores its lineGap), the 10px rounding boundary is 0.7px, 17px is 0.6px, a .ttc
+    // sub-face ~5%. Those get corrected by taking the measurement. Pages where the model is already
+    // right (native-control-heavy ones) gain nothing: a 0.2-0.4px difference only moves widgets off
+    // integer pixels so baked brushes resample (06-native went 1.93% -> 2.21%). The measurement
+    // therefore wins only when |measured - model| >= 0.5px, which is also where a difference stops
+    // being sub-pixel noise.
+    // Threshold is a knob (env only, no CLI surface) so the exact value can be A/B'd without a code
+    // change: HTML2UMG_LINE_BOX_MEASURE_MIN=0.25 (default) / 0 / 0.5.
+    const thresholdRaw = Number(process.env.HTML2UMG_LINE_BOX_MEASURE_MIN);
+    const threshold = Number.isFinite(thresholdRaw) && thresholdRaw >= 0 ? thresholdRaw : 0.25;
+    const delta = measured - modelBox;
+    if (Math.abs(delta) < threshold) return null;
+    this.warn(
+      `font: '${this.label(rec)}' line box measured ${V.round(measured, 2)}px vs model ${V.round(modelBox, 2)}px (Δ${delta > 0 ? '+' : ''}${V.round(delta, 2)}px); using the measurement`
+    );
+    return measured;
+  }
+
+  /** The CSS line box of one line of this style, in px (explicit > measured > model). */
+  cssLineBoxPx(style, fontProps, rec, text) {
+    const explicit = V.parsePx(style && style.lineHeight);
+    if (explicit !== null && explicit > 0) return explicit;
+    const modelBox = this.modelCssLineBox(style, fontProps);
+    const measured = this.measuredCssLineBox(rec, style, fontProps, text, modelBox);
+    const mode = String(this.opts.lineBoxSnap || process.env.HTML2UMG_LINE_BOX_SNAP || 'exact').toLowerCase();
+    const target = measured !== null && measured > 0 ? measured : modelBox;
+    return mode === 'font' ? target : this.lineBoxSnap(target);
+  }
+
+  /**
+   * Optional snapping of the target line box to whole or half pixels.
+   *
+   * 'exact' (default) uses the font's fractional metric, which is what Chromium's own layout keeps
+   * (LayoutUnit = 1/64px). 'int' / 'half' exist to test the opposite hypothesis on pages whose
+   * downstream widgets get resampled anyway: a line box that is a fraction of a pixel tall pushes
+   * every following widget onto a fractional pixel, and baked brushes then resample. This is only
+   * an A/B knob (--line-box-snap=exact|half|int, or HTML2UMG_LINE_BOX_SNAP); the default stays exact.
+   */
+  lineBoxSnap(box) {
+    const mode = String(this.opts.lineBoxSnap || process.env.HTML2UMG_LINE_BOX_SNAP || 'exact').toLowerCase();
+    if (!(box > 0)) return box;
+    if (mode === 'half') return Math.round(box * 2) / 2;
+    if (mode === 'int') return Math.round(box);
+    return box;
+  }
+
+  /**
+   * How many lines the browser laid this text out in.
+   *
+   * Wrapping an element that Chromium kept on one line is worse than not wrapping it: a Slate
+   * font that measures a fraction of a pixel wider turns a one-line label into two, which is
+   * exactly the button bug (20px -> 40px). So the wrap width is only emitted when the browser
+   * itself broke the text, i.e. when the content box is at least two line boxes tall.
+   */
+  textLineCount(rec, style, fontProps, text) {
+    const explicitBreaks = typeof text === 'string' ? (text.match(/\n/g) || []).length : 0;
+    // An authored height says nothing about the line count: a 34px button around a single 17px
+    // line divides out to 1.96 "lines" and would have made Slate wrap a label the browser kept on
+    // one line. Only a content-driven box is evidence. (Explicit <br> breaks still count.)
+    if (style && style.fixedHeight !== null && style.fixedHeight !== undefined) {
+      return Math.max(1, explicitBreaks + 1);
+    }
+    const lineBox = this.modelCssLineBox(style, fontProps);
+    if (!(lineBox > 0)) return Math.max(1, explicitBreaks + 1);
+    const contentHeight = this.contentBoxHeight(rec, style);
+    if (!(contentHeight > 0)) return Math.max(1, explicitBreaks + 1);
+    const raw = contentHeight / lineBox;
+    const lines = Math.max(1, Math.round(raw));
+    // A row stretched by a taller sibling (table rows, flex stretches) lands between whole
+    // lines; round anyway but leave a trail so a bad wrap can be traced back to this guess.
+    const fraction = Math.abs(raw - Math.floor(raw));
+    if (fraction > 0.4 && fraction < 0.6 && lines >= 2) {
+      this.warn(
+        `wrap: '${this.label(rec)}' content box is ${V.round(raw, 2)} line boxes tall; assumed ${lines} line(s) from the box height`
+      );
+    }
+    return Math.max(lines, explicitBreaks + 1);
+  }
+
+  wrapTextAt(rec, style, fontProps, text) {
+    if (!rec || !rec.rect) return 0;
+    if (/^nowrap/.test(String((style && style.whiteSpace) || 'normal'))) return 0;
+    // Only text the browser actually wrapped gets a wrap width (see textLineCount).
+    if (this.textLineCount(rec, style, fontProps, text) < 2) return 0;
+    const width = this.wrapWidthFor(rec, style);
+    if (!(width > 0)) return 0;
+    const tolerance = Number(this.opts.wrapTolerance !== undefined ? this.opts.wrapTolerance : process.env.HTML2UMG_WRAP_TOLERANCE);
+    return V.round(width + (Number.isFinite(tolerance) ? tolerance : 0), 2);
+  }
+
+  /**
+   * 'per-font' (default) reads each font's real line box; 'legacy' is the single global constant
+   * the converter used before, kept so a page can be A/B'd without a revert
+   * (--line-height-model=per-font|legacy, or HTML2UMG_LINE_HEIGHT_MODEL).
+   */
+  typographyModel() {
+    const raw = String(this.opts.lineHeightModel || process.env.HTML2UMG_LINE_HEIGHT_MODEL || 'per-font').toLowerCase();
+    return raw === 'legacy' ? 'legacy' : 'per-font';
+  }
+
+  /**
+   * Whether a TextBlock keeps UTextBlock's default ShadowOffset (1,1).
+   *
+   * `legacy` always keeps it (that is what the old output did). `default` keeps it while still
+   * counting the extra pixel in the line box, which isolates "baseline shifted by 1px" from
+   * "line box one pixel too tall" when A/B-ing a page (HTML2UMG_TEXT_SHADOW=default).
+   */
+  keepUmgShadow(shadow) {
+    if (shadow) return false;
+    if (this.typographyModel() === 'legacy') return true;
+    const raw = String(this.opts.textShadow || process.env.HTML2UMG_TEXT_SHADOW || 'zero').toLowerCase();
+    return raw === 'default';
+  }
+
+  /**
+   * How CJK runs get break opportunities. 'policy' (default) asks Slate to fall back to
+   * per-character wrapping when a run has no break point that fits; 'none' keeps the old
+   * behaviour. No zero-width characters are ever injected into the text itself, so the WBP's
+   * strings stay identical to the design.
+   */
+  /**
+   * 'ignore' (default) drops data-ue-font-map, 'keep' honours it.
+   * Env: HTML2UMG_FONT_MAP.
+   */
+  fontMapMode() {
+    const raw = String(this.opts.fontMap || process.env.HTML2UMG_FONT_MAP || 'ignore').toLowerCase();
+    return raw === 'keep' ? 'keep' : 'ignore';
+  }
+
+  /**
+   * 'exact' (default) bakes the design at --viewport; 'responsive' emits constraints Slate can
+   * resolve at run time (no baked WrapTextAt, text stretches across its container so it rewraps,
+   * centring becomes an Overlay instead of baked padding).
+   */
+  responsiveMode() {
+    const raw = String(this.opts.layout || process.env.HTML2UMG_LAYOUT || 'exact').toLowerCase();
+    return raw === 'responsive';
+  }
+
+  /**
+   * 'off' until /Script/Html2UMGRuntime.H2UTextWrapBox exists in the editor module.
+   *
+   * A plain TextBlock cannot wrap correctly inside a box panel: the panel asks for a desired size
+   * with no width constraint, so the block reports a single line and the wrapped text is clipped
+   * (measured on 12-responsive: .zh came out 1 line / card 98px instead of 3 lines / 142px). The
+   * runtime control fixes it by writing its allotted width into the inner block's WrapTextAt, so
+   * the value is only correct once that widget is imported. Env: HTML2UMG_TEXT_WRAP_BOX=1.
+   */
+  textWrapBoxMode() {
+    // On by default now that the control exists; HTML2UMG_TEXT_WRAP_BOX=0 is a kill switch for
+    // bisecting a bad render without a code change.
+    const raw = this.opts.textWrapBox !== undefined
+      ? this.opts.textWrapBox
+      : process.env.HTML2UMG_TEXT_WRAP_BOX;
+    const text = String(raw === undefined ? '' : raw).toLowerCase();
+    if (!text) return true;
+    return !(text === '0' || text === 'off' || text === 'false');
+  }
+
+  cjkBreakMode() {
+    const raw = String(this.opts.cjkBreaks || process.env.HTML2UMG_CJK_BREAKS || 'policy').toLowerCase();
+    return raw === 'none' || raw === 'off' ? 'none' : 'policy';
+  }
+
+  /**
+   * @param {object} rec          element record (carries platformFonts when probed)
+   * @param {object} style        computed style with fontFamily/fontSize/...
+   * @param {Map}    fontMap      data-ue-font-map overrides (empty for probes)
+   * @param {string} [text]       the string this font will render; decides whether a
+   *                              CJK fallback is required. Falls back to rec.text.
+   */
+  fontProperties(rec, style, fontMap, text) {
     const font = {
       // FSlateFontInfo::Size is a POINT size at 96 dpi, CSS font-size is px:
       // emitting px directly renders text 96/72 = 1.333x too large, which inflates
@@ -1547,7 +2948,12 @@ class Mapper {
         .filter((face) => face.family.toLowerCase() === primary.toLowerCase())
         .map((face) => face.src)
         .filter(Boolean);
-      const registered = this.assets.addFont(style.fontFamily, style.fontWeight, style.fontItalic, faces);
+      const rendered = typeof text === 'string' ? text : (rec && rec.text) || '';
+      const registered = this.assets.addFont(style.fontFamily, style.fontWeight, style.fontItalic, faces, {
+        text: rendered,
+        platformFonts: rec && rec.platformFonts ? rec.platformFonts : null,
+        faces: this.snapshot ? this.snapshot.fontFaces : null,
+      });
       if (registered && registered.hasFile) font.FontObject = `@${registered.key}`;
     }
     return font;
@@ -1725,11 +3131,14 @@ class Mapper {
     ].map((value) => V.round(value, 2));
     const brush = {};
     const hasRadius = radii.some((value) => value > 0);
-    brush.drawAs = hasRadius ? 'RoundedBox' : 'Box';
-    if (hasRadius) brush.cornerRadii = radii;
-    brush.tint = V.colorToLinear(visual.backgroundColor) || [0, 0, 0, 0];
     const policy = this.outlinePolicy(this.sidesFromVisual(visual), opts.label || 'control', opts.where);
-    if (policy.width > 0) {
+    // Same rule as borderBrush: a Box brush ignores OutlineSettings, so a bordered control with
+    // square corners would have no border at all. RoundedBox with zero radii is still a rectangle.
+    const outlined = policy.width > 0;
+    brush.drawAs = hasRadius || outlined ? 'RoundedBox' : 'Box';
+    if (hasRadius || outlined) brush.cornerRadii = radii;
+    brush.tint = V.colorToLinear(visual.backgroundColor) || [0, 0, 0, 0];
+    if (outlined) {
       brush.outlineWidth = policy.width;
       brush.outlineColor = policy.color;
     }
@@ -2041,7 +3450,7 @@ class Mapper {
     // UEditableTextBox keeps its font, colours and background inside the style struct.
     const widgetStyle = {
       TextStyle: {
-        Font: this.fontProperties(rec, style, new Map()),
+        Font: this.fontProperties(rec, style, new Map(), form.value || form.placeholder || ''),
         ColorAndOpacity: textColor,
       },
     };
@@ -2469,7 +3878,7 @@ class Mapper {
       canvasChildren.push.apply(canvasChildren, this.mapChildren(absolute, ctx, 'canvas', name));
       if (!canvasChildren.length) return null;
       canvas.children = canvasChildren;
-      this.meta.set(canvas, { rec, style, kind: 'canvas' });
+      this.meta.set(canvas, { rec, style, kind: 'canvas', canvasInset: this.canvasInsetOf(style) });
       return canvas;
     }
 
@@ -2477,11 +3886,47 @@ class Mapper {
       const canvas = this.makeNode(name, CLASS.CANVAS, rec);
       canvas.children = this.mapChildren(absolute, ctx, 'canvas', name);
       if (!canvas.children.length) return null;
-      this.meta.set(canvas, { rec, style, kind: 'canvas' });
+      this.meta.set(canvas, { rec, style, kind: 'canvas', canvasInset: this.canvasInsetOf(style) });
       return canvas;
     }
 
     return this.buildFlowContainer(rec, style, kind, flow, ctx, name);
+  }
+
+  /**
+   * How far the CanvasPanel sits inside its parent element's border box, per side.
+   *
+   * `buildElement` wraps the content in a Border whose Padding is the element's own padding+border,
+   * so the CanvasPanel is the element's CONTENT box. But an absolutely positioned child's CSS
+   * insets are measured from the element's **padding box**, and our sample positions are
+   * border-box relative (`rect - prect`). Both spaces have to be brought to the canvas origin or
+   * every absolute child is off by the padding: measured on 12-responsive's `.overlay`
+   * (`left/right:32; bottom:24; height:56` in a `padding:18px 24px 96px` element) it landed at
+   * x=296 (browser 272) and y=904 (browser 1000).
+   *
+   * A STATIC element is not a containing block for its absolute descendants, so its children's
+   * measured offsets are meaningless here - that path keeps the old (unshifted) treatment.
+   */
+  canvasInsetOf(style) {
+    // NOT tied to classify()'s kind: a CanvasPanel is created whenever the element has absolute
+    // children, and such an element is usually display:flex or grid, whose kind is not 'canvas'.
+    if (!style || style.position === 'static') return null;
+    const pad = style.padding || [0, 0, 0, 0];
+    const border = style.borderWidth || [0, 0, 0, 0];
+    const inset = [0, 1, 2, 3].map((i) => V.round((pad[i] || 0) + (border[i] || 0), 2));
+    return inset.some((v) => v !== 0) ? inset : null;
+  }
+
+  /** Move border-box-relative canvas samples onto the padding box (canvasBorder). */
+  withCanvasBorder(series, border) {
+    if (!series || !border) return series;
+    if (!border.some((v) => v !== 0)) return series;
+    const shift = (entries, near, far) => (entries || []).map((s) => ({
+      pos: V.round(s.pos - near, 4),
+      size: s.size,
+      parentSize: Math.max(1, V.round(s.parentSize - near - far, 4)),
+    }));
+    return { x: shift(series.x, border[0], border[2]), y: shift(series.y, border[1], border[3]) };
   }
 
   buildFlowContainer(rec, style, kind, items, ctx, name) {
@@ -2499,9 +3944,28 @@ class Mapper {
       cls = uniform ? CLASS.UNIFORM_GRID : CLASS.GRID;
       nodeKind = uniform ? 'uniform-grid' : 'grid';
       orientation = 'grid';
+      // UMG's GridPanel sizes a column from its widest cell, so a CSS track of 148px collapses to
+      // whatever the cell's content needs (measured: 83px). Pin every cell whose track has a px
+      // size to that width; fr / auto tracks stay content-driven.
+      const columns = Math.max(1, tracks.length);
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item.kind !== 'el' || !item.style) continue;
+        const explicit = Number.parseInt(item.style.gridColumnStart, 10);
+        const column = Number.isFinite(explicit) && explicit > 0 ? explicit - 1 : i % columns;
+        const track = tracks[column];
+        // mapChildren re-reads the style from the record, so the pin has to travel on the record
+        // rather than on the item's style object.
+        if (track && track.px !== undefined && item.rec) {
+          item.rec.h2uGridTrackWidth = V.round(track.px, 2);
+        }
+      }
     } else if (kind === 'flex') {
       if (style.flexWrap === 'wrap' || style.flexWrap === 'wrap-reverse') {
-        cls = CLASS.WRAP;
+        // responsive: the runtime subclass recomputes its desired HEIGHT from the width it was last
+        // arranged at, so the column count (and therefore the height a parent sees) follows the
+        // viewport. A plain WrapBox can only report the design-time WrapSize it was born with.
+        cls = this.responsiveMode() ? CLASS.WRAP_BOX_RUNTIME : CLASS.WRAP;
         nodeKind = 'wrap';
         orientation = 'w';
       } else if (style.flexDirection === 'column' || style.flexDirection === 'column-reverse') {
@@ -2516,6 +3980,10 @@ class Mapper {
       if (style.flexDirection.endsWith('reverse')) {
         this.warn(`unsupported: flex-direction:${style.flexDirection} on '${this.label(rec)}' laid out forward`);
       }
+    } else if (kind === 'tablerow') {
+      cls = CLASS.HORIZONTAL;
+      nodeKind = 'hbox';
+      orientation = 'h';
     } else if (kind === 'canvas') {
       cls = CLASS.CANVAS;
       nodeKind = 'canvas';
@@ -2540,6 +4008,23 @@ class Mapper {
         : null;
     }
 
+    // A VerticalBox child's height comes from its own content, and any per-element error then
+    // accumulates down the column. A long document drifted 660px over 7081px that way. The browser
+    // already measured each child, so the measured height is pinned on the record and read back by
+    // readStyle; fr/百分比 children and absolute ones keep their own sizing.
+    if (cls === CLASS.VERTICAL && this.opts.pinFlowHeights !== false) {
+      for (const item of items) {
+        if (item.kind !== 'el' || !item.rec || !item.rec.rect) continue;
+        if (item.style && item.style.isAbs) continue;
+        // A child that fills the remaining space (flex-grow / percentage height) must keep filling:
+        // pinning it to the design height would freeze a layout that is meant to stretch, which cost
+        // a dashboard page 5 points when every child was pinned.
+        if (item.style && (item.style.flexGrow > 0 || item.style.percentHeight !== null)) continue;
+        const height = item.rec.rect[3];
+        if (height >= 1) item.rec.h2uFlowHeight = V.round(height, 2);
+      }
+    }
+
     const children = this.mapChildren(items, ctx, orientation, name);
     // An empty container is noise in the Designer: only keep it if it carries
     // children. (Decorations still survive through their Border/SizeBox wrapper.)
@@ -2547,9 +4032,78 @@ class Mapper {
 
     const node = this.makeNode(name, cls, rec);
     node.children = children;
-    const properties = this.containerProperties(cls, style);
+    const properties = this.containerProperties(cls, style, rec);
     if (properties) node.properties = properties;
     this.meta.set(node, { rec, style, kind: nodeKind });
+    // --- responsive: express main-axis centring as a real Overlay -------------------------
+    // The exact mode bakes the leftover space as a top/left padding on the first child, which is
+    // correct only at the measured width. An Overlay slot centres for real, so one WBP keeps
+    // working at other sizes.
+    // responsive: a column child with width:N% becomes [spacer, child, spacer] in a row.
+    let pctWrapped = false;
+    if (this.responsiveMode() && cls === CLASS.VERTICAL) {
+      node.children = node.children.map((child) => {
+        const wrapped = this.wrapCrossAxisPercent(child);
+        if (wrapped) pctWrapped = true;
+        // Never a silent drop: if the row could not be built, crossAxisPercentPx()'s pin stays
+        // and the fallback explains why.
+        return wrapped || this.pinCrossAxisPercent(child);
+      });
+    }
+    // The Overlay rewrite below must read node.children (post-wrap), not the stale pre-wrap array:
+    // it used to take `children[0]`, so a spacer row was silently discarded and the box came out
+    // with no width at all. A row may still be re-parented into the Overlay - its Fill weights
+    // encode the HORIZONTAL share, while the Overlay is what makes the column's main-axis
+    // justify-content continuous - but it has to keep the full cross extent, so the slot below is
+    // forced to Fill on that axis.
+    if (this.responsiveMode() && node.children.length === 1 &&
+        (cls === CLASS.VERTICAL || cls === CLASS.HORIZONTAL) &&
+        /^(center|flex-end|end|right)$/.test(String(style.justify || ''))) {
+      const child = node.children[0];
+      const vertical = cls === CLASS.VERTICAL;
+      const justify = String(style.justify || '');
+      const cross = String(style.alignItems || 'normal');
+      // An Overlay slot can only align: it has no Fill weight, so a child that FILLS the main axis
+      // (flex-grow / main-axis percentage / an H2URelativeBox that measures that axis) would lose
+      // the stretch it needs. Leave the box alone and say so - centring it is cosmetic next to
+      // silently dropping a size.
+      const cm = this.meta.get(child) || {};
+      const cstyle = cm.style || {};
+      const mainPercent = vertical ? cstyle.percentHeight : cstyle.percentWidth;
+      const relOwnsMain = !!(cm.rel && (vertical ? cm.rel.height : cm.rel.width));
+      const fillsMain =
+        (cstyle.flexGrow || 0) > 0 ||
+        (mainPercent !== null && mainPercent !== undefined && mainPercent > 0) ||
+        relOwnsMain;
+      if (fillsMain) {
+        this.infoOnce(
+          `layout: '${this.label(cm.rec || rec)}' fills its parent's ${vertical ? 'column' : 'row'} main axis, so justify-content:${justify} stays a box slot (an Overlay slot would drop the stretch)`
+        );
+      } else {
+        const centred = (value, axisEnd) => (/center/.test(value) ? 'Center' : axisEnd.test(value) ? (axisEnd.horizontal ? 'Right' : 'Bottom') : null);
+        const hCross = centred(cross, { horizontal: true, test: s => /(end|flex-end|right)/.test(s) });
+        const vCross = centred(cross, { horizontal: false, test: s => /(end|flex-end|bottom)/.test(s) });
+        const hJustify = /center/.test(justify) ? 'Center' : 'Right';
+        const vJustify = /center/.test(justify) ? 'Center' : 'Bottom';
+        const slot = {
+          HorizontalAlignment: vertical ? (hCross || 'Fill') : hJustify,
+          VerticalAlignment: vertical ? vJustify : (vCross || 'Fill'),
+        };
+        // A wrapper that measures the space it is ALLOTTED (spacer row, H2URelativeBox) must keep
+        // the parent's full cross extent; the centring it encodes lives inside the wrapper.
+        if (cm.kind === 'relbox' || cm.kind === 'pct-row' || pctWrapped) {
+          if (vertical) slot.HorizontalAlignment = 'Fill';
+          else slot.VerticalAlignment = 'Fill';
+        }
+        node.class = CLASS.OVERLAY;
+        node.properties = undefined;
+        delete node.properties;
+        node.children = [child];
+        child.slot = slot;
+        if (cm) cm.overlaySlot = slot;
+        this.meta.set(node, { rec, style, kind: 'overlay-center' });
+      }
+    }
     return node;
   }
 
@@ -2565,14 +4119,35 @@ class Mapper {
     return gaps;
   }
 
-  containerProperties(cls, style) {
+  containerProperties(cls, style, rec) {
     const props = {};
     if (cls === CLASS.UNIFORM_GRID) {
       const gx = V.round((style.columnGap || 0) / 2, 2);
       const gy = V.round((style.rowGap || 0) / 2, 2);
       if (gx || gy) props.SlotPadding = [gx, gy, gx, gy];
-    } else if (cls === CLASS.WRAP) {
+    } else if (cls === CLASS.WRAP || cls === CLASS.WRAP_BOX_RUNTIME) {
       props.InnerSlotPadding = [V.round(style.columnGap || 0, 2), V.round(style.rowGap || 0, 2)];
+      // `WrapSize` is the DESIGN content width of this container - not 0, and not the engine default.
+      //
+      // SWrapBox drives BOTH ComputeDesiredSize and the child arranger from `PreferredSize`
+      // (SWrapBox.cpp:227 `WidthOfCurrentLine = WrapBox.PreferredSize`), and UWrapBox maps
+      // `WrapSize -> PreferredSize` (WrapBox.cpp:65-72). `bUseAllottedSize` (passed as
+      // `!bExplicitWrapSize`) only makes Tick overwrite that value with the allotted width, i.e. it
+      // fixes ARRANGE after the first pass but never the desired size. Measured:
+      //   WrapSize = 0        -> desired = one column   (12-responsive cards: 1226px tall)
+      //   engine default 500  -> a 460px card per row   (8 rows / 896px)
+      //   design content width-> 3 cards per row = 458px, which is what the browser reports
+      // In BOTH modes: this is an engine-default trap, not a responsive feature - a fixed-size design
+      // is just as wrong when the panel silently wraps at 500px.
+      props.bExplicitWrapSize = false;
+      const wrapSize = this.contentBoxWidth(rec, style);
+      if (wrapSize > 0) props.WrapSize = wrapSize;
+      if (cls === CLASS.WRAP_BOX_RUNTIME) {
+        // The run-time panel's primary input: the design content width it should use before the
+        // first arrange (and its fallback when it has no arranged width yet). WrapSize above stays
+        // as the second-line fallback, since H2UWrapBox is a UWrapBox.
+        if (wrapSize > 0) props.DesignWrapWidth = wrapSize;
+      }
     } else if (cls === CLASS.GRID) {
       // TArray<float>: star tracks must stay proportional inside GridPanel.
       const fr = style.gridFrColumns || [];
@@ -2715,6 +4290,10 @@ class Mapper {
       ? this.assets && this.assets.addFromUrl(style.bgImage.urls[0], { label: `background-image on '${this.label(rec)}'` })
       : null;
 
+    // One Slate outline for four CSS sides: outlinePolicy reports the collapse.
+    const effective = policy || this.outlinePolicy(this.sidesFromStyle(style), this.label(rec), 'border');
+    const outlined = effective.width > 0;
+
     if (texture) {
       brush.drawAs = 'Image';
       brush.texture = `@${texture.key}`;
@@ -2723,14 +4302,17 @@ class Mapper {
         this.warn(`approximated: background-size:${style.bgSize.mode} on '${this.label(rec)}' stretched to the box`);
       }
     } else {
-      brush.drawAs = hasRadius ? 'RoundedBox' : 'Box';
+      // A plain Box brush (the 9-slice path) draws its fill and NOTHING else: FSlateBrush's
+      // OutlineSettings is only consumed by the rounded-box shader. An element with a border and
+      // no corner radius therefore lost its border completely (measured: a 6px border rendered as
+      // no border at all, 14.5% of that swatch wrong). RoundedBox with zero radii is a rectangle,
+      // so the outline exists as soon as there is a border.
+      brush.drawAs = hasRadius || outlined ? 'RoundedBox' : 'Box';
     }
-    if (hasRadius) brush.cornerRadii = radii;
+    if (hasRadius || (outlined && brush.drawAs === 'RoundedBox')) brush.cornerRadii = radii;
     brush.tint = style.backgroundColor || [0, 0, 0, 0];
 
-    // One Slate outline for four CSS sides: outlinePolicy reports the collapse.
-    const effective = policy || this.outlinePolicy(this.sidesFromStyle(style), this.label(rec), 'border');
-    if (effective.width > 0) {
+    if (outlined) {
       brush.outlineWidth = effective.width;
       brush.outlineColor = effective.color || style.borderColor;
     }
