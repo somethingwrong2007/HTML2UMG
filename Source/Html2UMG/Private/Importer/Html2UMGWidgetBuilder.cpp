@@ -4,16 +4,24 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
+#include "Components/CheckBox.h"
+#include "Components/ComboBoxString.h"
 #include "Components/ContentWidget.h"
+#include "Components/Image.h"
 #include "Components/NamedSlot.h"
 #include "Components/NamedSlotInterface.h"
 #include "Components/PanelSlot.h"
 #include "Components/PanelWidget.h"
+#include "Components/Slider.h"
 #include "Components/Widget.h"
 #include "Dom/JsonValue.h"
 #include "Html2UMGLog.h"
+#include "Layout/Margin.h"
 #include "Misc/PackageName.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
 #include "UObject/Class.h"
 #include "UObject/UObjectHash.h"
 
@@ -98,6 +106,43 @@ namespace
 		}
 
 		return FVector2D::ZeroVector;
+	}
+
+	/** True when a style brush already carries baked pixels (the converter's --bake path: a full-colour crop). */
+	bool BrushCarriesPixels(const FSlateBrush& Brush)
+	{
+		return Brush.GetResourceObject() != nullptr;
+	}
+
+	/** A brush that draws nothing, used to clear Slate's factory defaults. */
+	FSlateBrush NoDrawBrush()
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
+		Brush.TintColor = FSlateColor(FLinearColor::Transparent);
+		return Brush;
+	}
+
+	/** True when the JSON object contains Object[Path[0]][Path[1]]...[Path.Last()]. */
+	bool HasNestedField(const TSharedPtr<FJsonObject>& Object, const TArray<FString>& Path)
+	{
+		if (!Object.IsValid() || Path.Num() == 0)
+		{
+			return false;
+		}
+
+		TSharedPtr<FJsonObject> Current = Object;
+		for (int32 Index = 0; Index + 1 < Path.Num(); ++Index)
+		{
+			const TSharedPtr<FJsonObject>* Next = nullptr;
+			if (!Current.IsValid() || !Current->TryGetObjectField(*Path[Index], Next) || Next == nullptr || !(*Next).IsValid())
+			{
+				return false;
+			}
+			Current = *Next;
+		}
+
+		return Current.IsValid() && Current->HasField(*Path.Last());
 	}
 }
 
@@ -471,23 +516,30 @@ int32 FHtml2UMGWidgetBuilder::ApplyProperties(const FH2UNode& Node, UWidget& Wid
 {
 	Widget.bIsVariable = Node.IsVariable() ? 1 : 0;
 
-	if (!Node.Properties.IsValid())
+	int32 Applied = 0;
+
+	if (Node.Properties.IsValid())
 	{
-		return 0;
+		const FH2UObjectResolver Resolver = [this](const FString& Reference, UClass* ExpectedClass, const FString& InContext) -> UObject*
+		{
+			return Assets.Resolve(Reference, ExpectedClass, InContext);
+		};
+
+		const FString Context = FString::Printf(TEXT("%s properties"), *NodeContext(Node));
+		const FH2UApplyStats Stats = FHtml2UMGPropertyApplier::ApplyJsonObject(&Widget, Node.Properties, Resolver, Sink, Context);
+
+		PropertiesSet += Stats.Applied;
+		UnknownProperties += Stats.UnknownKeys;
+		FailedProperties += Stats.Failed;
+		Applied = Stats.Applied;
 	}
 
-	const FH2UObjectResolver Resolver = [this](const FString& Reference, UClass* ExpectedClass, const FString& InContext) -> UObject*
-	{
-		return Assets.Resolve(Reference, ExpectedClass, InContext);
-	};
-
-	const FString Context = FString::Printf(TEXT("%s properties"), *NodeContext(Node));
-	const FH2UApplyStats Stats = FHtml2UMGPropertyApplier::ApplyJsonObject(&Widget, Node.Properties, Resolver, Sink, Context);
-
-	PropertiesSet += Stats.Applied;
-	UnknownProperties += Stats.UnknownKeys;
-	FailedProperties += Stats.Failed;
-	return Stats.Applied;
+	// Clear whatever UMG's own factory defaults would otherwise paint. This has to run after the JSON
+	// has had its say (it must never override an authored value) and even when the node carries no
+	// "properties" object at all - an empty wrapper Border is exactly the case that needs it.
+	const int32 Normalized = NormalizeWidgetDefaults(Node, Widget);
+	PropertiesSet += Normalized;
+	return Applied + Normalized;
 }
 
 void FHtml2UMGWidgetBuilder::ApplySlot(const FH2UNode& Node, UPanelSlot* Slot)
@@ -543,6 +595,148 @@ int32 FHtml2UMGWidgetBuilder::ApplyBrushBlock(const FH2UNode& Node, UWidget& Wid
 	UnknownProperties += Stats.UnknownKeys;
 	FailedProperties += Stats.Failed;
 	return Stats.Applied;
+}
+
+int32 FHtml2UMGWidgetBuilder::NormalizeWidgetDefaults(const FH2UNode& Node, UWidget& Widget)
+{
+	int32 Written = 0;
+	const TSharedPtr<FJsonObject>& Properties = Node.Properties;
+
+	// ------------------------------------------------------------------------------------------------
+	// PATCH 2 - UBorder's factory Padding is FMargin(4, 2) and nothing ever cleared it.
+	// Engine/Source/Runtime/UMG/Private/Components/Border.cpp:31 sets Padding = FMargin(4, 2). The
+	// layout contract only carries "Padding" when the CSS declared one, so an unpadded wrapper Border
+	// silently insets its child by 4px horizontally and 2px vertically. Measured on 05-controls.html
+	// (layout.json: Gain, Upload_BG, ArmOnSave_BG, LogTelemetry_BG and Divider have no "Padding"):
+	//   slider content box 692x2 instead of 702x6, progress bar 694x6 instead of 702x10,
+	//   check image shifted +4/+2 (UMG green bbox x=141..158 vs the Border-less UnitMetric at 137..154).
+	// ------------------------------------------------------------------------------------------------
+	if (UBorder* Border = Cast<UBorder>(&Widget))
+	{
+		const TArray<FString> PaddingKeys = { FString(TEXT("Padding")) };
+		if (!FHtml2UMGPropertyApplier::HasAnyField(Properties, PaddingKeys))
+		{
+			Border->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 0.0f));
+			++Written;
+		}
+
+		// PATCH 5 - a Border with no "brush" block keeps the engine's default FSlateBrush, which is
+		// DrawAs=Image + white tint + no texture (SlateCore/Private/Styling/SlateBrush.cpp:10-28).
+		// Slate draws exactly that as a solid box in the tint colour - cf. FSlateColorBrush
+		// (SlateCore/Public/Brushes/SlateColorBrush.h:12-22), which is the same brush shape - so a
+		// wrapper Border that only exists to carry padding would paint a white rectangle. Under the
+		// contract "no brush" means "the CSS painted no background and no border", so clear it.
+		// UBorder has no brush getter (only SetBrush), and a node without a brush block can never have
+		// been given one, so this write is unconditional and idempotent (also on a reimport).
+		if (!Node.Brush.IsValid())
+		{
+			Border->SetBrush(NoDrawBrush());
+			++Written;
+		}
+
+		return Written;
+	}
+
+	// Same "no brush means draw nothing" rule for UImage, whose default brush is the same white box.
+	if (UImage* Image = Cast<UImage>(&Widget))
+	{
+		if (!Node.Brush.IsValid() && Image->GetBrush().DrawAs != ESlateBrushDrawType::NoDrawType)
+		{
+			Image->SetBrush(NoDrawBrush());
+			++Written;
+		}
+
+		return Written;
+	}
+
+	// ------------------------------------------------------------------------------------------------
+	// PATCH 3 - UComboBoxString's dropdown frame (user defect 1: the popup list does not match).
+	// SComboButton wraps the popup content in
+	//   SNew(SBorder).BorderImage(MenuBorderBrush).Padding(MenuBorderPadding)
+	// (Engine/Source/Runtime/Slate/Private/Widgets/Input/SComboButton.cpp:207-212) and both members come
+	// from WidgetStyle.ComboButtonStyle (SComboButton.cpp:17-18). Their factory defaults are the light
+	// "Old/Menu_Background" 9-slice plus FMargin(1)
+	// (SlateCore/Private/Styling/UMGCoreStyle.cpp:439 and :443), so any ComboBoxString whose design did
+	// not author a popup frame gets light desktop chrome painted over a dark design.
+	// The row colours themselves are fine: ItemStyle is a *separate* UPROPERTY on UComboBoxString
+	// (Components/ComboBoxString.h:48) and layout.json already sends it at top level (read by the
+	// reflection writer), so only the frame and padding have to be cleared.
+	// ------------------------------------------------------------------------------------------------
+	if (UComboBoxString* Combo = Cast<UComboBoxString>(&Widget))
+	{
+		const TArray<FString> MenuBorderPath =
+		{
+			FString(TEXT("WidgetStyle")), FString(TEXT("ComboButtonStyle")), FString(TEXT("MenuBorderBrush"))
+		};
+
+		if (!HasNestedField(Properties, MenuBorderPath))
+		{
+			FComboBoxStyle Style = Combo->GetWidgetStyle();
+			Style.ComboButtonStyle.MenuBorderBrush = NoDrawBrush();
+			Style.ComboButtonStyle.MenuBorderPadding = FMargin(0.0f, 0.0f, 0.0f, 0.0f);
+			Combo->SetWidgetStyle(Style);
+			++Written;
+		}
+
+		return Written;
+	}
+
+	// ------------------------------------------------------------------------------------------------
+	// PATCH 4 - never multiply a colour into an image that already carries it (user defects 2 and 3).
+	// The converter's --bake path crops full-colour pixels into the style brushes, and it *also* emits
+	// the CSS accent colours as the widget-level tint properties. Slate multiplies the two together.
+	// Measured on 05-controls.html:
+	//   tex_6 #3fb950 x FCheckBoxStyle.CheckedForeground(.0497,.4851,.0802) = rgb(8,133,18)
+	//       (browser: rgb(63,185,80))  - SCheckBox tints the check image with the state foreground,
+	//       see SCheckBox.cpp:308-329 GetForegroundColorInternal and :551-554 ColorAndOpacity(UseForeground).
+	//   tex_16 #3fa9f5 x USlider::SliderBarColor(.008,.0144,.0242)       = rgb(1,17,41)
+	//   tex_16 #858585 x the same colour                                  = rgb(6,11,17)
+	//   tex_17 #3fa9f5 x USlider::SliderHandleColor(.0497,.3968,.9131)   = rgb(8,111,235)
+	// The textures are the design; the extra multiply is what makes the baked colours disappear
+	// (searching the whole render for the raw #3fa9f5 / #3fb950 / #858585 returns nothing). White keeps
+	// the pixels as authored. A design that really wants to tint a mono image authors tint on the brush
+	// (brush.tint), which this code does not touch.
+	// ------------------------------------------------------------------------------------------------
+	if (UCheckBox* Check = Cast<UCheckBox>(&Widget))
+	{
+		const FCheckBoxStyle& Current = Check->GetWidgetStyle();
+		if (BrushCarriesPixels(Current.CheckedImage) || BrushCarriesPixels(Current.UncheckedImage))
+		{
+			const FSlateColor KeepBakedPixels = FSlateColor(FLinearColor::White);
+
+			FCheckBoxStyle Style = Current;
+			Style.ForegroundColor = KeepBakedPixels;
+			Style.HoveredForeground = KeepBakedPixels;
+			Style.PressedForeground = KeepBakedPixels;
+			Style.CheckedForeground = KeepBakedPixels;
+			Style.CheckedHoveredForeground = KeepBakedPixels;
+			Style.CheckedPressedForeground = KeepBakedPixels;
+			Style.UndeterminedForeground = KeepBakedPixels;
+
+			if (!(Current.ForegroundColor == KeepBakedPixels && Current.CheckedForeground == KeepBakedPixels))
+			{
+				Check->SetWidgetStyle(Style);
+				++Written;
+			}
+		}
+
+		return Written;
+	}
+
+	if (USlider* Slider = Cast<USlider>(&Widget))
+	{
+		const FSliderStyle& Style = Slider->GetWidgetStyle();
+		if (BrushCarriesPixels(Style.NormalBarImage) || BrushCarriesPixels(Style.NormalThumbImage))
+		{
+			Slider->SetSliderBarColor(FLinearColor::White);
+			Slider->SetSliderHandleColor(FLinearColor::White);
+			++Written;
+		}
+
+		return Written;
+	}
+
+	return Written;
 }
 
 FVector2D FHtml2UMGWidgetBuilder::EstimateWidgetSize(const FH2UNode& Node) const

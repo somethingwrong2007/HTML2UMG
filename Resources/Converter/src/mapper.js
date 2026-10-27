@@ -20,6 +20,7 @@ const CLASS = {
   SIZE_BOX: 'SizeBox',
   SCALE_BOX: 'ScaleBox',
   SCROLL_BOX: 'ScrollBox',
+  BACKGROUND_BLUR: 'BackgroundBlur',
   TEXT: 'TextBlock',
   IMAGE: 'Image',
   BUTTON: 'Button',
@@ -58,7 +59,41 @@ const REPLACED_TAGS = {
  */
 const LEAF_KINDS = new Set([
   'text', 'image', 'button', 'textinput', 'combobox', 'progress', 'checkbox', 'slider', 'placeholder',
+  // classifyInput() emits the HTML input types, not the widget names: a range is
+  // 'range' and a radio is 'radio'. Without them the element's name lands on the
+  // decoration Border and the real Slider/CheckBox is emitted as '<name>_Content'.
+  'range', 'radio',
 ]);
+
+/**
+ * Kinds whose widget style paints the element's own box (background, outline and
+ * content inset). A wrapper Border around one of these paints the same box a
+ * second time — the browser draws one frame, the widget would draw two — and
+ * doubles the content padding (wrapper Border.Padding + the style's own padding).
+ */
+const SELF_BOX_KINDS = new Set([
+  'button', 'combobox', 'textinput', 'checkbox', 'radio', 'range', 'slider', 'progress',
+]);
+
+/** Slate font sizes are points at 96 dpi; CSS font-size is px. */
+const PX_PER_POINT = 96 / 72;
+/** Slate's default line box for a font is ~1.2em; used to derive row padding. */
+const LINE_BOX_FACTOR = 1.2;
+/**
+ * The two engines define a text line box differently, and the difference accumulates.
+ *
+ * UMG: FTextLayout computes LineSize.Y = (MaxAboveBaseline + MaxBelowBaseline) *
+ * LineHeightPercentage, i.e. the font's ascent+descent times the percentage. For the Windows UI
+ * fonts this pipeline imports Slate measures that as ~1.417x the font size (a 12px Segoe UI
+ * TextBlock reports a 17px desired height).
+ * CSS: 'line-height: normal' uses the font's ascent+descent+lineGap, ~1.333x the font size (a
+ * 12px label in the browser measures 16px tall).
+ *
+ * So a CSS line box must be divided by 1.4167/1.3333 = 1.0625 before it is handed to Slate, or
+ * every text row comes out about a pixel too tall and drags everything below it down the page.
+ */
+const UMG_LINE_HEIGHT_FACTOR = 1.4167;
+const CSS_NORMAL_LINE_HEIGHT_FACTOR = 1.3333;
 
 class Mapper {
   constructor(options) {
@@ -75,6 +110,12 @@ class Mapper {
     for (const rec of this.snapshot.elements) this.byIndex.set(rec.i, rec);
     this.meta = new Map();
     this.samples = new Map();
+    // USlider cannot paint to the ends of its own box: SSlider::OnPaint draws the track
+    // from HalfHandleSize.X to AllottedWidth - HalfHandleSize.X, so a 702px slider shows a
+    // 687px bar inset by 7.5px each side. The overhang that puts the painted track back on
+    // the CSS box is recorded per record index and applied as negative slot padding on the
+    // SizeBox wrapper (boxSlot).
+    this.sliderOverhang = new Map();
     this._buildSamples();
   }
 
@@ -177,6 +218,11 @@ class Mapper {
         cs.borderBottomStyle || 'none',
       ],
       backgroundColor: V.colorToLinear(cs.backgroundColor),
+      // Effects Slate has no direct model for. The mapper either bakes them (gradients)
+      // or maps them onto a dedicated UMG widget (backdrop-filter -> BackgroundBlur).
+      backdropFilter: cs.backdropFilter || 'none',
+      boxShadow: cs.boxShadow || 'none',
+      shadow: V.parseBoxShadow(cs.boxShadow),
       overflowX: cs.overflowX || 'visible',
       overflowY: cs.overflowY || 'visible',
       zIndex: cs.zIndex !== undefined ? Number(cs.zIndex) || 0 : 0,
@@ -235,7 +281,10 @@ class Mapper {
       (style.backgroundColor && style.backgroundColor[3] > 0.002) ||
       style.borderWidth.some((w) => w > 0) ||
       style.borderRadius.some((r) => r > 0) ||
-      style.bgImage.urls.length > 0;
+      style.bgImage.urls.length > 0 ||
+      // A gradient is painted too: without this an element whose only paint is a
+      // gradient (e.g. the page background) got no Border and therefore drew nothing.
+      style.bgImage.gradients.length > 0;
     style.hasPadding = style.padding.some((p) => p > 0);
     return style;
   }
@@ -244,15 +293,30 @@ class Mapper {
   checkUnsupported(rec) {
     const cs = rec.cs || {};
     const label = this.label(rec);
-    if (cs.boxShadow) this.warn(`unsupported: box-shadow on '${label}' dropped`);
+    // A box-shadow is baked together with the element's own paint (see bake.js bakeShadow),
+    // so it is only dropped when it cannot be mapped (an inset shadow, or no outer footprint).
+    const parsedShadow = V.parseBoxShadow(cs.boxShadow);
+    if (parsedShadow) {
+      this.warn(`mapped: box-shadow on '${label}' baked into the element texture`);
+    } else if (cs.boxShadow && cs.boxShadow !== 'none') {
+      this.warn(`unsupported: box-shadow on '${label}' dropped (only outer shadows are mapped)`);
+    }
     if (cs.filter) this.warn(`unsupported: filter on '${label}' dropped`);
-    if (cs.backdropFilter) this.warn(`unsupported: backdrop-filter on '${label}' dropped`);
+    // backdrop-filter is mapped onto UBackgroundBlur (see the container builder), so it is
+    // only unsupported when it is not a plain blur().
+    if (cs.backdropFilter && cs.backdropFilter !== 'none' && this.blurStrength(cs.backdropFilter) <= 0) {
+      this.warn(`unsupported: backdrop-filter: ${cs.backdropFilter} on '${label}' dropped (only blur() is mapped)`);
+    }
     if (cs.transform) this.warn(`unsupported: transform on '${label}' dropped (layout uses the untransformed box)`);
     if (cs.mixBlendMode) this.warn(`unsupported: mix-blend-mode on '${label}' dropped`);
     if (cs.clipPath) this.warn(`unsupported: clip-path on '${label}' dropped`);
     if (cs.maskImage) this.warn(`unsupported: mask-image on '${label}' dropped`);
+    // Gradients are no longer dropped: the bake pass rasterises them into a texture
+    // (see bake.js bakePaint), so there is nothing to warn about here.
     const bg = V.parseBackgroundImage(cs.backgroundImage);
-    if (bg.gradients.length) this.warn(`unsupported: ${bg.gradients[0]} on '${label}' dropped (flat background used)`);
+    if (bg.gradients.length > 1) {
+      this.warn(`approximated: ${bg.gradients.length} stacked gradients on '${label}' baked as one paint`);
+    }
     if (rec.pseudo && (rec.pseudo.before || rec.pseudo.after)) {
       this.warn(`unsupported: ::before/::after content on '${label}' dropped`);
     }
@@ -335,6 +399,7 @@ class Mapper {
         parentClass === CLASS.SIZE_BOX ||
         parentClass === CLASS.SCROLL_BOX ||
         parentClass === CLASS.BUTTON ||
+        parentClass === CLASS.BACKGROUND_BLUR ||
         parentClass === CLASS.OVERLAY;
       // An explicit cross-axis alignment in CSS wins over the line-height trick.
       const parentAlign = (pmeta && pmeta.style && pmeta.style.alignItems) || 'normal';
@@ -361,6 +426,9 @@ class Mapper {
       case CLASS.SCROLL_BOX:
       case CLASS.BUTTON:
       case CLASS.OVERLAY:
+      // UBackgroundBlurSlot carries the same alignment pair (it is a UContentWidget like
+      // Border), so a blurred element's child gets the same single-child slot.
+      case CLASS.BACKGROUND_BLUR:
         // Single-child wrapper slots: padding is always handled by the wrapper
         // itself, so only the alignment members are emitted (they exist on every
         // one of these slot classes).
@@ -425,12 +493,33 @@ class Mapper {
     const alignSelf = style.alignSelf || 'auto';
     const cross = alignSelf !== 'auto' ? alignSelf : alignItems;
     const mainAlign = mapJustify(justify, vertical);
-    const crossAlign = mapAlign(cross, vertical);
+    let crossAlign = mapAlign(cross, vertical);
+    // CSS only stretches a child on the cross axis when the child has no size of its own
+    // ('align-items: stretch' loses to an explicit width/height). Slate has no such rule: a
+    // Fill slot allots the whole panel width, which SILENTLY OVERRIDES the SizeBox's
+    // WidthOverride/HeightOverride, so a flow element with a fixed CSS size was stretched to
+    // the full canvas. Use the start alignment instead - the SizeBox then reports the size
+    // the design asked for, and still shrinks when the parent is narrower.
+    const explicitOnCross = vertical ? style.fixedWidth !== null : style.fixedHeight !== null;
+    if (crossAlign === 'Fill' && explicitOnCross) {
+      crossAlign = vertical ? 'Left' : 'Top';
+    }
+    // A Fill slot must ALSO say Fill on the main axis.
+    //
+    // Slate's box panels run a flex algorithm (SlateCore/LayoutUtils.h ArrangeChildrenInStack):
+    // the slot's SizeRule decides the share, but the alignment decides the arranged size that
+    // is actually handed to the child. A slot that is SizeRule=Fill with HorizontalAlignment=Left
+    // therefore gets the distributed share *position* yet the child is arranged at its own
+    // desired width - measured on 01-flex: two flex:2 / flex:1 columns came out 485px and 110px
+    // wide where the browser has 1236px and 618px. Declaring the main axis Fill as well made the
+    // render match the browser and dropped that page from 13.01% to 6.02%.
+    const fillMain = out.Size && out.Size.SizeRule === 'Fill';
+    const mainFillAlign = fillMain ? 'Fill' : mainAlign;
     if (vertical) {
       out.HorizontalAlignment = crossAlign;
-      out.VerticalAlignment = mainAlign;
+      out.VerticalAlignment = mainFillAlign;
     } else {
-      out.HorizontalAlignment = mainAlign;
+      out.HorizontalAlignment = mainFillAlign;
       out.VerticalAlignment = crossAlign;
     }
     // A text run that followed an inline widget carries its separating space, but
@@ -438,6 +527,23 @@ class Mapper {
     const inlineSpace = (cmeta && cmeta.inlineSpace) || 0;
     if (inlineSpace && !usedMainGap) {
       out.Padding[vertical ? 1 : 0] = V.round(out.Padding[vertical ? 1 : 0] + inlineSpace, 2);
+    }
+    // Slider overhang (see the constructor): grow the slot by one thumb width so the track
+    // SSlider insets by HalfHandleSize.X lands exactly on the CSS box instead of 7.5px in
+    // from both ends. A negative FMargin is legal on a box slot and only pads outward.
+    // box-shadow growth is cancelled on the slot so the element's FLOW footprint stays its CSS
+    // box while the SizeBox/Border underneath is larger (and paints the shadow).
+    const shadowGrowth = this.shadowExtentsOf(style);
+    if (shadowGrowth) {
+      for (let i = 0; i < 4; i += 1) {
+        out.Padding[i] = V.round((out.Padding[i] || 0) - shadowGrowth[i], 2);
+      }
+    }
+
+    const overhang = (cmeta && cmeta.overhang) || 0;
+    if (overhang && vertical) {
+      out.Padding[0] = V.round(out.Padding[0] - overhang, 2);
+      out.Padding[2] = V.round(out.Padding[2] - overhang, 2);
     }
     return out;
   }
@@ -474,6 +580,18 @@ class Mapper {
     };
     const z = style ? style.zIndex : 0;
     if (z) slot.ZOrder = z;
+    // box-shadow: grow the placed rect outward. Point anchors carry the size in
+    // Right/Bottom, stretched anchors carry margins there, so the two cases add differently.
+    const shadowGrowth = this.shadowExtentsOf(style);
+    if (shadowGrowth) {
+      const pointX = xAxis.min === xAxis.max;
+      const pointY = yAxis.min === yAxis.max;
+      const offsets = slot.LayoutData.Offsets;
+      offsets.Left = V.round(offsets.Left - shadowGrowth[0], 2);
+      offsets.Top = V.round(offsets.Top - shadowGrowth[1], 2);
+      offsets.Right = V.round(offsets.Right + (pointX ? shadowGrowth[0] + shadowGrowth[2] : shadowGrowth[2]), 2);
+      offsets.Bottom = V.round(offsets.Bottom + (pointY ? shadowGrowth[1] + shadowGrowth[3] : shadowGrowth[3]), 2);
+    }
     return slot;
   }
 
@@ -839,8 +957,14 @@ class Mapper {
     const kind = this.classify(rec, style);
     if (kind === 'skip') return null;
 
-    const wantsScroll = this.wantsScroll(style, kind);
-    const wantsBorder = style.hasVisualBox || style.hasPadding;
+    const wantsScroll = this.wantsScroll(style, kind, rec);
+    // A leaf control's widget style already paints the element's whole box
+    // (FButtonStyle, FComboBoxStyle, FEditableTextBoxStyle, FCheckBox images,
+    // FSliderStyle bar, FProgressBar images). A wrapper Border around it would
+    // paint the same background/outline a second time and would also apply the
+    // CSS content padding twice (Border.Padding + the style's own padding).
+    const selfPainted = SELF_BOX_KINDS.has(kind);
+    const wantsBorder = !selfPainted && (style.hasVisualBox || style.hasPadding);
     const crossPercent = this.crossAxisPercentPx(rec, style, ctx.orientation);
     const wantsSize =
       !ctx.isRoot &&
@@ -893,8 +1017,19 @@ class Mapper {
       const border = this.makeNode(nodeName.border, CLASS.BORDER, rec, primaryKey !== 'border');
       const policy = this.outlinePolicy(this.sidesFromStyle(style), this.label(rec), 'border');
       border.brush = this.borderBrush(style, rec, policy);
+      // Only a *positioned* box is the containing block of an absolutely positioned
+      // descendant, so on a static element (e.g. <body>) the CSS padding/border must
+      // not inset a CanvasPanel whose children carry viewport-absolute offsets —
+      // insetting it translated the whole design by the padding.
+      const staticCanvas = kind === 'canvas' && style.position === 'static';
+      const shadowGrowth = this.shadowExtentsOf(style) || [0, 0, 0, 0];
       const inset = [0, 1, 2, 3].map((i) =>
-        V.round((style.padding[i] || 0) + (style.borderWidth[i] || 0) + (policy.extra[i] || 0), 2)
+        V.round(
+          (staticCanvas ? 0 : (style.padding[i] || 0) + (style.borderWidth[i] || 0)) +
+            (policy.extra[i] || 0) +
+            shadowGrowth[i],
+          2
+        )
       );
       if (inset.some((v) => v !== 0)) border.properties = { Padding: inset };
       if (node) border.children = [node];
@@ -902,11 +1037,42 @@ class Mapper {
       node = border;
     }
 
+    // backdrop-filter: blur(N) is exactly what UMG's BackgroundBlur widget does: it blurs
+    // whatever is already painted behind it in the widget stack. It goes OUTSIDE the
+    // element's own background (which is translucent) but inside the size box, so the
+    // blur covers the designed box and the tinted panel is drawn on top of it.
+    const blurStrength = this.blurStrength(style.backdropFilter);
+    if (blurStrength > 0) {
+      const blur = this.makeNode(this.names.unique(`${rootName}_Blur`), CLASS.BACKGROUND_BLUR, rec, true);
+      blur.properties = { BlurStrength: blurStrength };
+      if (node) blur.children = [node];
+      this.meta.set(blur, { rec, style, kind: 'blur' });
+      this.warn(`mapped: backdrop-filter: blur(${blurStrength}px) on '${this.label(rec)}' -> BackgroundBlur (runtime-only; the offscreen render cannot show it)`);
+      node = blur;
+    }
+
     if (wantsSize) {
       const box = this.makeNode(nodeName.size, CLASS.SIZE_BOX, rec, true);
       box.properties = this.sizeBoxProperties(style, crossPercent);
+      // box-shadow: the painted footprint is bigger than the element. Grow the SizeBox and pull
+      // the slot back with negative padding (see boxSlot), so the shadow has room to be drawn
+      // while the element still occupies exactly its CSS box in the flow.
+      const shadowExtents = this.shadowExtentsOf(style);
+      if (shadowExtents) {
+        const [left, top, right, bottom] = shadowExtents;
+        if (box.properties.bOverride_WidthOverride) {
+          box.properties.WidthOverride = V.round(box.properties.WidthOverride + left + right, 2);
+        } else {
+          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no fixed width, so the shadow is clipped horizontally`);
+        }
+        if (box.properties.bOverride_HeightOverride) {
+          box.properties.HeightOverride = V.round(box.properties.HeightOverride + top + bottom, 2);
+        } else {
+          this.warn(`approximated: box-shadow on '${this.label(rec)}' has no fixed height, so the shadow is clipped vertically`);
+        }
+      }
       if (node) box.children = [node];
-      this.meta.set(box, { rec, style, kind: 'sizebox' });
+      this.meta.set(box, { rec, style, kind: 'sizebox', overhang: this.sliderOverhang.get(rec.i) || 0 });
       node = box;
     }
 
@@ -1024,8 +1190,13 @@ class Mapper {
     return props;
   }
 
-  wantsScroll(style, kind) {
+  wantsScroll(style, kind, rec) {
     if (kind === 'text' || kind === 'image') return false;
+    // A <textarea> is mapped to a MULTILINE UEditableTextBox, and SMultiLineEditableTextBox
+    // scrolls its own text. Wrapping it in a ScrollBox is worse than redundant: SScrollBox
+    // arranges children at their DESIRED height (it has no stretch), so the multiline box
+    // painted only its one-line height (38px) inside the 76px viewport the design declares.
+    if (rec && rec.tag === 'textarea') return false;
     return (
       style.overflowY === 'auto' ||
       style.overflowY === 'scroll' ||
@@ -1246,8 +1417,10 @@ class Mapper {
     // wrapping block whose box the line-height did not fill.
     const centreSingleLine = singleLine && fillsBox && rec.elemKids === 0;
     if (!centreSingleLine) {
-      const lineHeight = V.lineHeightToPercent(textStyle.lineHeight, textStyle.fontSize);
-      if (lineHeight && Math.abs(lineHeight - 100) > 4) props.LineHeightPercentage = lineHeight;
+      // Always emitted, not only for an explicit line-height: the default deserves the
+      // correction too, because Slate's natural line box and CSS's differ (see the factors).
+      const percentage = this.lineHeightPercentage(textStyle);
+      if (percentage !== null) props.LineHeightPercentage = percentage;
     }
     const shadow = parseTextShadow(textStyle.textShadow);
     if (shadow) {
@@ -1289,14 +1462,70 @@ class Mapper {
       Justification: mapJustifyText(style.textAlign),
       AutoWrapText: !/^nowrap/.test(style.whiteSpace),
     };
+    const runPercentage = this.lineHeightPercentage(style);
+    if (runPercentage !== null) node.properties.LineHeightPercentage = runPercentage;
     // The run has no box of its own: the owner's margins must not leak into its slot.
     this.meta.set(node, { rec, style: Object.assign({}, style, { margin: [0, 0, 0, 0] }), kind: 'text' });
     return node;
   }
 
+  /**
+   * box-shadow growth per side [l, t, r, b] in CSS px, or null when there is no shadow.
+   *
+   * A CSS blur radius b bakes a shadow that fades over roughly b beyond the shape (the blur
+   * kernel's sigma is b/2), so the painted footprint grows by (blur + spread) on every side,
+   * shifted by the offset.
+   */
+  shadowExtentsOf(style) {
+    const shadow = style && style.shadow;
+    if (!shadow) return null;
+    const grow = (shadow.blur || 0) + (shadow.spread || 0);
+    const out = [
+      Math.max(0, grow - (shadow.dx || 0)),
+      Math.max(0, grow - (shadow.dy || 0)),
+      Math.max(0, grow + (shadow.dx || 0)),
+      Math.max(0, grow + (shadow.dy || 0)),
+    ].map((value) => V.round(value, 2));
+    return out.some((value) => value > 0) ? out : null;
+  }
+
+  /**
+   * `backdrop-filter: blur(18px)` -> UBackgroundBlur::BlurStrength.
+   * Returns 0 when there is no blur (or the value is not a px length).
+   */
+  blurStrength(value) {
+    const text = String(value || '');
+    if (!text || text === 'none') return 0;
+    const match = /blur\(\s*([\d.]+)\s*(px)?\s*\)/i.exec(text);
+    if (!match) return 0;
+    const radius = Number(match[1]);
+    if (!(radius > 0)) return 0;
+    return Math.round(Math.min(radius, 100) * 100) / 100;
+  }
+
+  /**
+   * CSS line-height -> UMG LineHeightPercentage, correcting for the different line box
+   * definition.
+   *
+   * UTextBlock::LineHeightPercentage is a MULTIPLIER where 1.0 means Slate's natural line box
+   * (STextBlock initialises it to 1.0f and FTextLayout multiplies the font's ascent+descent by
+   * it). It is NOT a 0-100 percentage: emitting 94 here makes every line 94 times taller.
+   * Returns null when the style carries no usable font size.
+   */
+  lineHeightPercentage(style) {
+    if (!style || !(style.fontSize > 0)) return null;
+    const explicit = V.lineHeightToPercent(style.lineHeight, style.fontSize);
+    const cssFactor = explicit === null ? CSS_NORMAL_LINE_HEIGHT_FACTOR : explicit / 100;
+    if (!(cssFactor > 0)) return null;
+    return V.round(cssFactor / UMG_LINE_HEIGHT_FACTOR, 3);
+  }
+
   fontProperties(rec, style, fontMap) {
     const font = {
-      Size: V.round(style.fontSize, 2),
+      // FSlateFontInfo::Size is a POINT size at 96 dpi, CSS font-size is px:
+      // emitting px directly renders text 96/72 = 1.333x too large, which inflates
+      // every line box and drags the whole column down the page.
+      Size: V.round(style.fontSize / PX_PER_POINT, 2),
       TypefaceFontName: typefaceName(style.fontWeight, style.fontItalic),
     };
     const spacing = V.letterSpacingToSlate(style.letterSpacing, style.fontSize);
@@ -1439,27 +1668,45 @@ class Mapper {
     const extra = [0, 0, 0, 0];
     if (!(maxWidth > 0.01)) return { width: 0, color: null, extra, sides };
     const names = ['left', 'top', 'right', 'bottom'];
+    // One Slate outline has to stand for four CSS sides, so pick the width the MAJORITY of
+    // painted edges use and only fall back to the widest edge on a tie. Picking the single
+    // widest edge repainted all four in that edge's colour: a textarea styled
+    // `border:1px #24384a; border-left:3px #d29922` got a 3px ORANGE frame on every side,
+    // which is where ~2.9k of that page's 3.0k orange pixels came from (the browser draws
+    // 3px of orange on 76 left-hand pixels only).
     let index = 0;
-    for (let i = 1; i < 4; i += 1) if (widths[i] > widths[index]) index = i;
+    let bestCount = -1;
+    for (let i = 0; i < 4; i += 1) {
+      if (!(widths[i] > 0.01)) continue;
+      let count = 0;
+      for (let j = 0; j < 4; j += 1) {
+        if (widths[j] > 0.01 && Math.abs(widths[j] - widths[i]) < 0.01) count += 1;
+      }
+      if (count > bestCount || (count === bestCount && widths[i] > widths[index])) {
+        bestCount = count;
+        index = i;
+      }
+    }
+    const outlineWidth = widths[index] > 0.01 ? widths[index] : maxWidth;
     const color = sides.colors[index] || [0, 0, 0, 0];
     const present = widths.filter((value) => value > 0.01).length;
-    const uniform = present === 4 && widths.every((value) => Math.abs(value - maxWidth) < 0.01);
+    const uniform = present === 4 && widths.every((value) => Math.abs(value - outlineWidth) < 0.01);
     if (!uniform) {
-      for (let i = 0; i < 4; i += 1) extra[i] = V.round(Math.max(0, maxWidth - widths[i]), 2);
+      for (let i = 0; i < 4; i += 1) extra[i] = V.round(Math.max(0, outlineWidth - widths[i]), 2);
       if (present === 1) {
         this.warn(
-          `approximated: only the ${names[index]} ${what} is kept on '${label}' (Slate brushes have a single outline); other edges padded by ${V.round(maxWidth, 2)}px`
+          `approximated: only the ${names[index]} ${what} is kept on '${label}' (Slate brushes have a single outline); other edges padded by ${V.round(outlineWidth, 2)}px`
         );
       } else {
         this.warn(
-          `approximated: ${what} widths ${JSON.stringify(widths.map((v) => V.round(v, 2)))} on '${label}' collapsed to the widest (${V.round(maxWidth, 2)}px, ${names[index]} colour)`
+          `approximated: ${what} widths ${JSON.stringify(widths.map((v) => V.round(v, 2)))} on '${label}' collapsed to the dominant ${V.round(outlineWidth, 2)}px (${names[index]} colour)`
         );
       }
     }
     if (sides.styles.some((value) => /dashed|dotted|double|groove|ridge/.test(String(value)))) {
       this.warn(`approximated: ${what}-style ${sides.styles.join('/')} on '${label}' drawn solid`);
     }
-    return { width: V.round(maxWidth, 2), color, extra, sides };
+    return { width: V.round(outlineWidth, 2), color, extra, sides };
   }
 
   /**
@@ -1644,6 +1891,22 @@ class Mapper {
     return null;
   }
 
+  /**
+   * Designed popup row height in CSS px. An SComboRow is sized by its content plus
+   * MenuRowPadding, so the authored height can only be honoured as vertical padding.
+   * Sources, in order: data-ue-row-height, the row rule's line-height (a single-line
+   * row is as tall as its line box), else 0 (leave the engine default).
+   */
+  rowHeight(info, ue, style) {
+    const declared = ue && ue['row-height'] !== undefined ? parseFloat(ue['row-height']) : NaN;
+    if (Number.isFinite(declared) && declared > 0) return declared;
+    const row = info && info.row;
+    const line = row && row.base ? V.parsePx(row.base.lineHeight) : null;
+    const font = (style && style.fontSize) || 14;
+    if (line && line > font * 1.15) return line;
+    return 0;
+  }
+
   comboItemStyle(info, label) {
     const row = info.row;
     if (!row) return null;
@@ -1694,6 +1957,13 @@ class Mapper {
     // Zebra rows fall back to the plain row surface so neither is ever left empty.
     out.EvenRowBackgroundBrush = chain([row.even], 'row:even') || clone(inactive);
     out.OddRowBackgroundBrush = chain([row.odd], 'row:odd') || clone(inactive);
+    // A hovered, *non-selected* row is painted with the zebra hovered brushes, never
+    // with InactiveHoveredBrush (STableRow::OnPaint), so leaving these at the engine
+    // default is what put a light highlight bar over the dark popup list.
+    out.EvenRowBackgroundHoveredBrush =
+      chain([row.hover], 'row:even:hover') || clone(out.EvenRowBackgroundBrush);
+    out.OddRowBackgroundHoveredBrush =
+      chain([row.hover], 'row:odd:hover') || clone(out.OddRowBackgroundBrush);
     const textColor = row.text || row.controlText || [1, 1, 1, 1];
     out.TextColor = textColor;
     out.SelectedTextColor = row.activeText || textColor;
@@ -1757,6 +2027,10 @@ class Mapper {
     const props = {};
     if (form.placeholder) props.HintText = form.placeholder;
     if (form.value) props.Text = form.value;
+    // A <textarea> is a MULTILINE edit box. Without IsMultiLine the widget is a single-line
+    // SEditableTextBox that can never be taller than one line, which is why a 76px design
+    // painted a 38px box (the ScrollBox around it does not stretch its child either).
+    if (rec.tag === 'textarea') props.IsMultiLine = true;
 
     const normal = this.visualBrush(ctl.box, { label: `${label} box`, allowEmpty: true }) ||
       (style.hasVisualBox ? this.borderBrush(style, rec) : null);
@@ -1848,19 +2122,56 @@ class Mapper {
     }
     const inset = this.controlInset(style, ctl.box, label);
     if (inset) widgetStyle.ContentPadding = inset;
-    if (ctl.row && ctl.row.list) {
-      const menu = this.visualBrush(ctl.row.list, { label: `${label} menu`, allowEmpty: true });
-      if (menu && widgetStyle.ComboButtonStyle) widgetStyle.ComboButtonStyle.MenuBorderBrush = menu;
+    // The popup is an SComboButton menu: it is wrapped in an SBorder painted with
+    // FComboButtonStyle.MenuBorderBrush and inset by MenuBorderPadding. Both default
+    // to the editor's light menu frame, so a dark popup ends up inside a light frame
+    // (and pushed inward) unless they are authored.
+    const menuSource = (ctl.row && ctl.row.list) || ctl.box;
+    const menu = menuSource ? this.visualBrush(menuSource, { label: `${label} menu`, allowEmpty: true }) : null;
+    if (menu || baked) {
+      widgetStyle.ComboButtonStyle = widgetStyle.ComboButtonStyle || {};
+      if (menu) widgetStyle.ComboButtonStyle.MenuBorderBrush = menu;
+      // The design's list box is drawn by its own rows; an extra frame inset would
+      // show as a gap between the closed box and the rows.
+      widgetStyle.ComboButtonStyle.MenuBorderPadding = [0, 0, 0, 0];
     }
+    if (baked) {
+      // The baked closed box already carries the caret the browser drew; the engine
+      // arrow (a light default brush) would be painted a second time on top of it.
+      widgetStyle.ComboButtonStyle = widgetStyle.ComboButtonStyle || {};
+      // imageSize 0 for the same reason as the check box: a NoDrawType brush still feeds its
+    // ImageSize into the SImage's desired size (engine default 32x32).
+    widgetStyle.ComboButtonStyle.DownArrowImage = { drawAs: 'NoDrawType', tint: [0, 0, 0, 0], imageSize: [0, 0] };
+      widgetStyle.ComboButtonStyle.DownArrowPadding = [0, 0, 0, 0];
+    }
+    // UComboBoxString's popup is an SListView whose scrollbar comes from its own
+    // ScrollBarStyle UPROPERTY, which defaults to the bright editor scrollbar. The
+    // design shows no scrollbar, so it is collapsed to zero thickness.
+    // imageSize 0: a NoDrawType brush still contributes its ImageSize to the owning SImage's
+    // desired size, and the engine default is 32x32.
+    const noBrush = () => ({ drawAs: 'NoDrawType', tint: [0, 0, 0, 0], imageSize: [0, 0] });
+    props.ScrollBarStyle = {
+      Thickness: 0,
+      VerticalBackgroundImage: noBrush(),
+      VerticalTopSlotImage: noBrush(),
+      VerticalBottomSlotImage: noBrush(),
+      NormalThumbImage: noBrush(),
+      HoveredThumbImage: noBrush(),
+      DraggedThumbImage: noBrush(),
+    };
+    // Row metrics: FComboBoxStyle has no row-height field — an SComboRow is the item
+    // content plus MenuRowPadding — so the designed row height has to become vertical
+    // padding around the text line. Using only the author's padding collapsed the
+    // 34px '.combo-list .item' rows to the bare text height.
     const rowPad = this.rowPadding(info);
-    if (rowPad) widgetStyle.MenuRowPadding = rowPad;
-    // data-ue-row-height: ComboBoxString has no row-height property, so the row
-    // height is expressed as symmetric vertical MenuRowPadding instead.
-    const declaredRow = ue['row-height'] !== undefined ? parseFloat(ue['row-height']) : NaN;
-    if (Number.isFinite(declaredRow) && declaredRow > 0) {
-      const line = (style.fontSize || 14) * 1.3;
-      const vpad = V.round(Math.max(0, (declaredRow - line) / 2), 2);
-      widgetStyle.MenuRowPadding = [rowPad ? rowPad[0] : 0, vpad, rowPad ? rowPad[2] : 0, vpad];
+    const rowHeight = this.rowHeight(info, ue, style);
+    const hPad = rowPad || [0, 0, 0, 0];
+    if (rowHeight > 0) {
+      const line = (style.fontSize || 14) * LINE_BOX_FACTOR;
+      const vpad = V.round(Math.max(0, (rowHeight - line) / 2), 2);
+      widgetStyle.MenuRowPadding = [hPad[0], vpad, hPad[2], vpad];
+    } else if (rowPad) {
+      widgetStyle.MenuRowPadding = rowPad;
     }
     if (ue['menu-max-height'] !== undefined) {
       this.warn(`note: data-ue-menu-max-height on '${label}' has no ComboBoxString equivalent; set the menu size in the widget style asset`);
@@ -1989,12 +2300,33 @@ class Mapper {
         widgetStyle.CheckedPressedImage = checkedHover || checked;
       }
     }
-    // FCheckBoxStyle.ForegroundColor tints the caption; derive it from the authored
-    // context (the probe inherits it) rather than the UA's field-text colour.
+    // FCheckBoxStyle.ForegroundColor tints the caption, but SCheckBox builds its
+    // check image as
+    //   SNew(SImage).Image(OnGetCheckImage).ColorAndOpacity(FSlateColor::UseForeground())
+    // so the SAME colour is also a multiplier on the check image. A baked texture
+    // already carries the authored colours, so every state colour must stay white
+    // or the green tick is multiplied down to near-black.
     const textColor =
       V.colorToLinear(ctl.inheritedColor) || this.colorOf(ctl.box) || this.colorOf(ctl.computed) || style.color;
-    widgetStyle.ForegroundColor = textColor;
-    if (accent) widgetStyle.CheckedForeground = accent;
+    const imageCarriesColour = !!(bakedParts || checked || unchecked);
+    const foregrounds = [
+      'ForegroundColor', 'CheckedForeground', 'UndeterminedForeground',
+      'HoveredForeground', 'CheckedHoveredForeground', 'PressedForeground', 'CheckedPressedForeground',
+    ];
+    if (imageCarriesColour) {
+      for (const key of foregrounds) widgetStyle[key] = [1, 1, 1, 1];
+    } else {
+      widgetStyle.ForegroundColor = textColor;
+      if (accent) widgetStyle.CheckedForeground = accent;
+    }
+    // The engine's check box style carries a non-zero Padding and a BackgroundImage;
+    // both paint/inset a box the browser never draws.
+    widgetStyle.Padding = [0, 0, 0, 0];
+    // imageSize MUST be zeroed alongside NoDrawType: SCheckBox builds this image as an SImage,
+    // and an SImage still contributes Brush.ImageSize to its DESIRED size even when the draw
+    // type paints nothing. FSlateBrush defaults ImageSize to (32,32), so leaving it alone makes
+    // the 18x18 check box report a 32px desired width and the tick renders stretched to 32x18.
+    widgetStyle.BackgroundImage = { drawAs: 'NoDrawType', tint: [0, 0, 0, 0], imageSize: [0, 0] };
     props.WidgetStyle = widgetStyle;
     if (isRadio) this.warn(`approximated: radio input '${label}' mapped to CheckBox`);
     if (!accent && !checked && !ctl.before) {
@@ -2026,8 +2358,6 @@ class Mapper {
     const radii = this.radiusOf(trackVisual);
     const barColor = (trackVisual && V.colorToLinear(trackVisual.backgroundColor)) || null;
 
-    if (accent) props.SliderHandleColor = accent;
-    if (barColor && barColor[3] > 0) props.SliderBarColor = barColor;
     const widgetStyle = {};
     if (track) widgetStyle.NormalBarImage = track;
     const hoverTrack = ctl.states && ctl.states.hover
@@ -2061,6 +2391,15 @@ class Mapper {
         widgetStyle.DisabledThumbImage = bakedThumb;
       }
     }
+    // USlider paints the bar/thumb as
+    //   Brush->GetTint() * SliderBarColor * ...
+    // (SSlider.cpp OnPaint). Our bar/thumb brush already carries the authored
+    // colour — a baked texture of the real pixels, or a tinted visual brush — so a
+    // coloured multiplier squares the colour and turns the blue track black.
+    if (widgetStyle.NormalBarImage) props.SliderBarColor = [1, 1, 1, 1];
+    else if (barColor && barColor[3] > 0) props.SliderBarColor = barColor;
+    if (widgetStyle.NormalThumbImage) props.SliderHandleColor = [1, 1, 1, 1];
+    else if (accent) props.SliderHandleColor = accent;
     if (Object.keys(widgetStyle).length) props.WidgetStyle = widgetStyle;
     node.properties = props;
     this.meta.set(node, { rec, style, kind: 'slider' });
@@ -2357,6 +2696,20 @@ class Mapper {
   borderBrush(style, rec, policy) {
     const brush = {};
     const radii = style.borderRadius.map((r) => V.round(r, 2));
+    // A gradient background was rasterised by the bake pass (see bake.js
+    // bakePaint): the texture already carries the gradient, the rounded corners and
+    // the border, so it replaces the tint/outline combination entirely.
+    const bakedPaint = this.bakedFor(rec);
+    if (bakedPaint && bakedPaint.shadow) {
+      // A shadow bake already contains the element's own background and border, drawn over the
+      // expanded rect, so it replaces every other brush on this node.
+      const shaded = this.bakedBrush(bakedPaint.shadow);
+      if (shaded) return shaded;
+    }
+    if (bakedPaint && bakedPaint.paint) {
+      const painted = this.bakedBrush(bakedPaint.paint);
+      if (painted) return painted;
+    }
     const hasRadius = radii.some((r) => r > 0);
     const texture = style.bgImage.urls.length
       ? this.assets && this.assets.addFromUrl(style.bgImage.urls[0], { label: `background-image on '${this.label(rec)}'` })

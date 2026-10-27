@@ -244,6 +244,32 @@ function letterSpacingToSlate(input, fontSizePx) {
 }
 
 /** "24px" line-height -> percentage of font size (UMG LineHeightPercentage). */
+/**
+ * First outer box-shadow -> { dx, dy, blur, spread } in CSS px, or null.
+ * `inset` shadows are not mapped (they would need a second, inner paint layer).
+ */
+function parseBoxShadow(input) {
+  const text = String(input || '').trim();
+  if (!text || text === 'none') return null;
+  const first = text.split(/,(?![^(]*\))/)[0] || '';
+  if (/inset/i.test(first)) return null;
+  const lengths = first.match(/-?[\d.]+px/g) || [];
+  if (lengths.length < 2) return null;
+  const value = (index) => {
+    const px = parsePx(lengths[index]);
+    return px === null ? null : px;
+  };
+  const dx = value(0);
+  const dy = value(1);
+  if (dx === null || dy === null) return null;
+  return {
+    dx,
+    dy,
+    blur: value(2) || 0,
+    spread: value(3) || 0,
+  };
+}
+
 function lineHeightToPercent(input, fontSizePx) {
   const px = parsePx(input);
   if (px === null || !fontSizePx) return null;
@@ -307,6 +333,7 @@ module.exports = {
   parseFontWeight,
   letterSpacingToSlate,
   lineHeightToPercent,
+  parseBoxShadow,
   parseBackgroundImage,
   parseBackgroundSize,
   finite,

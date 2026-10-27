@@ -206,7 +206,7 @@ node Plugins/Html2UMG/Resources/Converter/cli/convert.js design.html -o design.j
 Html2UMG.Import "D:/design/design.json"
 
 :: 全链路，无编辑器窗口
-UnrealEditor-Cmd.exe FPVSkyline.uproject -run=Html2UMG -html="D:/design/design.html" -blueprint="/Game/UI/WBP_Design" -unattended -nullrhi
+UnrealEditor-Cmd.exe <Project>.uproject -run=Html2UMG -html="D:/design/design.html" -blueprint="/Game/UI/WBP_Design" -unattended -nullrhi
 ```
 
 ---

@@ -57,7 +57,7 @@ design.html ──[Node + 本机 Chromium/CDP]──> layout.json ──[UE Edit
 - 一次快照无法区分"左对齐"和"居中"（1920 宽下位置一样）——所以要用多视口 probe 推断 anchors；
 - `box-shadow`、渐变、`backdrop-filter` 这类 Slate 画不出的效果，要么烘焙成贴图，要么用材质近似。
 
-**这条路线已有商业实现**——你给的参考站 [UMGForge](https://soulpersona.studio/pages/umgforge_docs) 就是这个架构（Node 驱动本机 Chromium，输出 JSON，编辑器生成 WBP）。它验证了可行性，也暴露了这条路线的难点清单（响应式、字体度量、烘焙策略）。本项目按同一架构实现，但在契约、反射写入和可验证性上做了自己的设计。
+这类「测量在真实浏览器里做、把结果落成可 diff 的 JSON、再由编辑器重建 WBP」的做法，难点是固定的几个：响应式要靠多视口推断、字体度量在两个引擎里不一致、Slate 画不出的效果只能烘焙。本项目的取舍都围绕这三件事，并且在契约、反射写入和可验证性上做了自己的设计。
 
 ---
 
@@ -103,7 +103,6 @@ design.html ──[Node + 本机 Chromium/CDP]──> layout.json ──[UE Edit
 
 ## 参考
 
-- [UMGForge 文档](https://soulpersona.studio/pages/umgforge_docs) — 同架构的商业参考实现，含"能转换/不能转换"清单
 - [litehtml](https://github.com/litehtml/litehtml) — 路线 ② 的典型基座，作者自己说明不支持 flex/grid
 - [UE4_Gumbo](https://github.com/AlexeyTaranov/UE4_Gumbo) — Gumbo HTML 解析器的 UE 移植
 - [WebUIX (Fab)](https://www.fab.com/listings/ef660a6e-7069-4c7f-88dc-e3dbc1620fbd) — 路线 ② 的商业产品

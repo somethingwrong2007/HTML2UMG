@@ -25,7 +25,8 @@ public:
 	 * @param OutError      Human readable failure reason.
 	 * @return true when the png was written.
 	 */
-	static bool RenderWidgetToFile(const FString& BlueprintPath, FVector2D Size, const FString& OutPng, FString& OutError);
+	static bool RenderWidgetToFile(const FString& BlueprintPath, FVector2D Size, const FString& OutPng, FString& OutError,
+		const FString& OutGeometryJson = FString());
 
 	/** Same as above but writes the png next to the blueprint's saved folder with a generated name. */
 	static bool RenderWidgetToFolder(const FString& BlueprintPath, FVector2D Size, const FString& OutDirectory, FString& OutPngFile, FString& OutError);

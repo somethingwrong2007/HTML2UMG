@@ -27,6 +27,8 @@ const KNOWN_CLASSES = new Set([
   'EditableTextBox', 'ComboBoxString', 'ProgressBar', 'CheckBox', 'Slider', 'Spacer',
   'RichTextBlock', 'NamedSlot', 'RetainerBox', 'SafeZone', 'ExpandableArea', 'ListView',
   'StackBox', 'WidgetSwitcher', 'Throbber', 'CircularThrottle',
+  // Added for the effects round: backdrop-filter maps onto UMG's BackgroundBlur.
+  'BackgroundBlur',
 ]);
 
 /** Slot class implied by the *parent* container. */
@@ -43,6 +45,7 @@ const SLOT_KEYS = {
   ScrollBox: ['Padding', 'Size', 'HorizontalAlignment', 'VerticalAlignment'],
   Button: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   Overlay: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
+  BackgroundBlur: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
 };
 
 /** Slot class name used in messages. */
@@ -51,11 +54,13 @@ const SLOT_CLASS = {
   CanvasPanel: 'CanvasPanelSlot', GridPanel: 'GridSlot', UniformGridPanel: 'UniformGridSlot',
   Border: 'BorderSlot', SizeBox: 'SizeBoxSlot', ScaleBox: 'ScaleBoxSlot', ScrollBox: 'ScrollBoxSlot',
   Button: 'ButtonSlot', Overlay: 'OverlaySlot',
+  // UBackgroundBlur is a UContentWidget with its own UBackgroundBlurSlot.
+  BackgroundBlur: 'BackgroundBlurSlot',
 };
 
 /** Widgets that can hold at most one child / no children at all. */
 const MAX_CHILDREN = {
-  Border: 1, SizeBox: 1, ScaleBox: 1, ScrollBox: 1, Button: 1, RetainerBox: 1, SafeZone: 1,
+  Border: 1, SizeBox: 1, ScaleBox: 1, ScrollBox: 1, Button: 1, RetainerBox: 1, SafeZone: 1, BackgroundBlur: 1,
   TextBlock: 0, Image: 0, ProgressBar: 0, EditableTextBox: 0, ComboBoxString: 0,
   CheckBox: 0, Slider: 0, Spacer: 0, Throbber: 0,
 };

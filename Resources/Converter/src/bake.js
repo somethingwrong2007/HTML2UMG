@@ -323,6 +323,24 @@ async function queryNodeId(session, rootNodeId, selector) {
 }
 
 // ------------------------------------------------------------------- baking
+/**
+ * A gradient background is a paint Slate has no model for: FSlateBrush can only
+ * fill a shape with a single tint or an image. Rather than approximate a
+ * linear-gradient with one flat colour (the old behaviour), the element's own
+ * background is rasterised into a texture, exactly like a native control part.
+ * Returns the gradient function name when the element needs a paint bake.
+ */
+function gradientPaintOf(rec) {
+  const cs = rec.cs || {};
+  const image = String(cs.backgroundImage || '');
+  if (!image || image === 'none') return null;
+  // url() backgrounds already travel through the image-asset path, and a gradient
+  // layered under a url() is not worth splitting: bail out and keep the photo.
+  if (/url\(/i.test(image)) return null;
+  const match = /((?:repeating-)?(?:linear|radial|conic)-gradient)/i.exec(image);
+  return match ? match[1].toLowerCase() : null;
+}
+
 function bakeTarget(rec) {
   const tag = rec.tag;
   const type = (rec.form && rec.form.type) || '';
@@ -330,7 +348,42 @@ function bakeTarget(rec) {
   if (tag === 'progress') return 'progress';
   if (tag === 'input' && (type === 'checkbox' || type === 'radio')) return 'checkbox';
   if (tag === 'input' && type === 'range') return 'range';
+  // A shadow is baked over an EXPANDED rect that also contains the element's own background,
+  // so it subsumes a gradient paint on the same element.
+  if (shadowOf(rec)) return 'shadow';
+  if (gradientPaintOf(rec)) return 'paint';
   return null;
+}
+
+/**
+ * Growth of the painted footprint caused by the first outer box-shadow, per side
+ * [l, t, r, b] in CSS px - or null. Mirrors Mapper#shadowExtentsOf so the bake and the
+ * layout agree on how much bigger the texture has to be.
+ */
+function shadowOf(rec) {
+  const cs = rec.cs || {};
+  const text = String(cs.boxShadow || '').trim();
+  if (!text || text === 'none' || /inset/i.test(text)) return null;
+  if (/url\(/i.test(String(cs.backgroundImage || ''))) return null;
+  const first = text.split(/,(?![^(]*\))/)[0] || '';
+  const lengths = first.match(/-?[\d.]+px/g) || [];
+  if (lengths.length < 2) return null;
+  const num = (index) => {
+    const match = /-?[\d.]+/.exec(lengths[index] || '0');
+    return match ? Number(match[0]) : 0;
+  };
+  const dx = num(0);
+  const dy = num(1);
+  const blur = num(2);
+  const spread = num(3);
+  const grow = blur + spread;
+  const out = [
+    Math.max(0, grow - dx),
+    Math.max(0, grow - dy),
+    Math.max(0, grow + dx),
+    Math.max(0, grow + dy),
+  ];
+  return out.some((value) => value > 0) ? { extents: out } : null;
 }
 
 function effectiveScale(rect, requested, maxEdge, warn, label) {
@@ -393,6 +446,11 @@ async function bakeControls(options) {
 
   const originalValues = new Map();
 
+  // The scale a texture was ACTUALLY captured at. effectiveScale() lowers it when a big
+  // element would exceed --bake-max, so dividing by the requested scale instead labels the
+  // brush with half its real design size (an 1110x120 strip came out as imageSize 555x60).
+  let activeScale = scale;
+
   const register = (baked, label, scaleForSize) => {
     if (!baked) return null;
     if (baked.width > maxEdge || baked.height > maxEdge) {
@@ -400,7 +458,7 @@ async function bakeControls(options) {
     }
     const added = assets.addBuffer(encodePng(baked.width, baked.height, baked.data), 'png', `bake on '${label}'`);
     if (!added) return null;
-    const divisor = scaleForSize || scale;
+    const divisor = scaleForSize || activeScale || 1;
     // Design size (CSS px) so the brush draws at the authored size, not at the
     // rasterisation scale.
     added.designWidth = Math.round((baked.width / divisor) * 100) / 100;
@@ -424,6 +482,7 @@ async function bakeControls(options) {
       }
       const label = labelOf(rec);
       const localScale = effectiveScale(rect, scale, maxEdge, warn, label);
+      activeScale = localScale;
       // getBoundingClientRect is viewport-relative; Page.captureScreenshot clips are
       // document (page) coordinates, so add the scroll offset captured with the snapshot.
       const scrollX = (snapshot.scroll && snapshot.scroll.x) || 0;
@@ -441,6 +500,18 @@ async function bakeControls(options) {
           output.set(rec.i, { kind, parts: await bakeProgress(session, rec, baseClip, localScale, radii, register, label, warn, originalValues) });
         } else if (kind === 'range') {
           output.set(rec.i, { kind, parts: await bakeRange(session, rec, baseClip, localScale, radii, register, label, warn, originalValues) });
+        } else if (kind === 'paint') {
+          output.set(rec.i, { kind, parts: await bakePaint(session, rec, baseClip, localScale, radii, register, label, warn) });
+        } else if (kind === 'shadow') {
+          const growth = shadowOf(rec).extents;
+          const expanded = roundRect(
+            baseClip.x - growth[0],
+            baseClip.y - growth[1],
+            baseClip.width + growth[0] + growth[2],
+            baseClip.height + growth[1] + growth[3]
+          );
+          output.set(rec.i, { kind, parts: await bakeShadow(session, rec, expanded, localScale, register, label, warn) });
+          if (output.get(rec.i)) output.get(rec.i).imageSize = [expanded.width, expanded.height];
         }
       } catch (err) {
         warn(`bake: '${label}' could not be baked (${err.message}); kept vector styling`);
@@ -478,7 +549,10 @@ async function rememberOriginal(session, rec, store) {
     `(function () {
       var el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return null;
-      return { value: el.value === undefined ? null : String(el.value), checked: !!el.checked, disabled: !!el.disabled };
+      var selected = el.options ? el.selectedIndex : -1;
+      var caption = el.options && el.options[selected] ? el.options[selected].textContent : null;
+      return { value: el.value === undefined ? null : String(el.value), checked: !!el.checked, disabled: !!el.disabled,
+               selectedIndex: selected, caption: caption };
     })()`,
     { returnByValue: true }
   );
@@ -495,6 +569,10 @@ async function restore(session, rec, store) {
       if (!el) return 0;
       el.disabled = ${state.disabled ? 'true' : 'false'};
       if (el.type === 'checkbox' || el.type === 'radio') el.checked = ${state.checked ? 'true' : 'false'};
+      if (el.options && ${state.caption === null ? 'false' : 'true'} && el.options[${state.selectedIndex}]) {
+        el.options[${state.selectedIndex}].textContent = ${JSON.stringify(state.caption === null ? '' : state.caption)};
+        el.selectedIndex = ${state.selectedIndex};
+      }
       if (${state.value === null ? 'true' : 'false'}) return 1;
       try { el.value = ${JSON.stringify(state.value)}; } catch (e) { /* ignore */ }
       return 1;
@@ -507,11 +585,19 @@ async function restore(session, rec, store) {
 async function bakeSelect(session, nodeId, rec, clip, scale, radii, register, label, warn, store) {
   await rememberOriginal(session, rec, store);
   // The selected caption must not end up in the texture: UMG draws its own text
-  // from ForegroundColor, and baked-in text would double up.
-  await injectCss(
-    session,
-    `[data-h2u-idx="${rec.i}"] { color: transparent !important; text-shadow: none !important; -webkit-text-fill-color: transparent !important; }
-     [data-h2u-idx="${rec.i}"] option { color: transparent !important; }`
+  // from ForegroundColor, and baked-in text would double up. The caption is
+  // emptied instead of being made transparent, because Chromium paints the native
+  // dropdown arrow from the same colour — a transparent caption also erases the
+  // caret, which is why the baked select had no arrow.
+  await session.evaluate(
+    `(function () {
+      var el = document.querySelector('[data-h2u-idx="${rec.i}"]');
+      if (!el || !el.options || el.selectedIndex < 0) return 0;
+      var option = el.options[el.selectedIndex];
+      if (option) option.textContent = '';
+      return 1;
+    })()`,
+    { returnByValue: true }
   );
   await settle(session);
   const parts = {};
@@ -569,10 +655,15 @@ async function bakeCheckbox(session, nodeId, rec, clip, scale, radii, register, 
       warn(`bake: could not decode the ${name} screenshot of '${label}'`);
       return null;
     }
-    // A checkbox is a small rounded square (or a circle for radio).
-    const masked = radii.some((value) => value > 0)
-      ? applyRoundedMask(decoded, radii, scale)
-      : applyCircleMask(decoded);
+    // A radio is a circle; a checkbox is a rounded rectangle when the author gave
+    // it a radius and a plain rectangle otherwise. Falling back to a circular mask
+    // for a radius-less checkbox clipped every oblong box into an ellipse, which is
+    // what made the imported check image stop being rectangular.
+    const isRadio = ((rec.form && rec.form.type) || '').toLowerCase() === 'radio';
+    let masked;
+    if (radii.some((value) => value > 0)) masked = applyRoundedMask(decoded, radii, scale);
+    else if (isRadio) masked = applyCircleMask(decoded);
+    else masked = decoded;
     return register(masked, `${label} ${name}`);
   };
 
@@ -610,14 +701,12 @@ async function bakeProgress(session, rec, clip, scale, radii, register, label, w
     warn(`bake: could not decode the progress track of '${label}'`);
   }
 
-  // Fill: hide the track and run to 100% so the texture is the full-width fill
-  // (UMG clips FillImage to Percent at runtime).
+  // Fill: run to 100% with everything visible so the texture is the authored fill
+  // colour (UMG clips FillImage to Percent at runtime) and lift it off the track by
+  // difference. Hiding ::-webkit-progress-bar here captured the element's own
+  // background instead of the fill, so no colour from the value ever reached it.
   const max = Number(rec.form && rec.form.max) || 1;
-  await injectCss(
-    session,
-    `[data-h2u-idx="${rec.i}"]::-webkit-progress-bar { opacity: 0 !important; }
-     [data-h2u-idx="${rec.i}"]::-webkit-progress-value { opacity: 1 !important; }`
-  );
+  await injectCss(session, `[data-h2u-idx="${rec.i}"]::-webkit-progress-value { opacity: 1 !important; }`);
   await session.evaluate(
     `(function () { var el = document.querySelector('[data-h2u-idx="${rec.i}"]'); if (el) el.value = ${max}; return 1; })()`,
     { returnByValue: true }
@@ -640,6 +729,54 @@ async function bakeProgress(session, rec, clip, scale, radii, register, label, w
   return parts;
 }
 
+/**
+ * Rasterise just this element's own background paint (a CSS gradient) into a texture.
+ *
+ * Children are hidden first, so what lands in the texture is the background and the
+ * border only - the element's TextBlock/child widgets are drawn by UMG on top, and if
+ * they were baked in they would be painted twice. The corners are masked with the
+ * element's border-radius, which also makes the texture carry the rounded shape, so the
+ * brush needs no corner radii of its own.
+ */
+async function bakePaint(session, rec, clip, scale, radii, register, label, warn) {
+  const selector = `[data-h2u-idx="${rec.i}"]`;
+  // Every direct child is a separate UMG widget (text runs included).
+  await injectCss(session, `${selector} > * { visibility: hidden !important; }`);
+  await settle(session);
+
+  const png = await shot(session, clip, scale);
+  const decoded = decodePng(png);
+  if (!decoded) {
+    warn(`bake: could not decode the gradient paint of '${label}'`);
+    return null;
+  }
+  const shaped = radii && radii.some((value) => value > 0)
+    ? applyRoundedMask(decoded, radii, scale)
+    : decoded;
+  const added = register(shaped, `${label} paint`);
+  return added ? { paint: added } : null;
+}
+/**
+ * Bake an element WITH its box-shadow, over the rect expanded by the shadow footprint.
+ *
+ * The shadow fades into whatever is behind it, so the texture has to be captured over the
+ * expanded rect: there is no Slate brush that can paint a blurred outline. Children are hidden
+ * (they are separate widgets), and no rounded mask is applied - the outer silhouette here is the
+ * shadow, not the element's own rounded box.
+ */
+async function bakeShadow(session, rec, clip, scale, register, label, warn) {
+  const selector = `[data-h2u-idx="${rec.i}"]`;
+  await injectCss(session, `${selector} > * { visibility: hidden !important; }`);
+  await settle(session);
+  const png = await shot(session, clip, scale);
+  const decoded = decodePng(png);
+  if (!decoded) {
+    warn(`bake: could not decode the box-shadow paint of '${label}'`);
+    return null;
+  }
+  const added = register(decoded, `${label} shadow`);
+  return added ? { shadow: added } : null;
+}
 async function bakeRange(session, rec, clip, scale, radii, register, label, warn, store) {
   await rememberOriginal(session, rec, store);
   const parts = {};

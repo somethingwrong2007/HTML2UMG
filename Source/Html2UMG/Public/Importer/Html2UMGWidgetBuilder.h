@@ -57,6 +57,16 @@ private:
 	void ApplySlot(const FH2UNode& Node, UPanelSlot* Slot);
 	int32 ApplyBrushBlock(const FH2UNode& Node, UWidget& Widget);
 
+	/**
+	 * Clears the UMG factory defaults the layout JSON never asked for, after the JSON has been applied:
+	 *   - UBorder's Padding = FMargin(4,2) and its "no brush" default (a solid white box)
+	 *   - UComboBoxString's Slate-default dropdown frame (MenuBorderBrush / MenuBorderPadding)
+	 *   - widget-level colour tints that would be multiplied a second time into a baked texture
+	 *     (FCheckBoxStyle foreground colours, USlider bar/handle colours)
+	 * Returns how many properties were written, so the caller still calls SynchronizeProperties().
+	 */
+	int32 NormalizeWidgetDefaults(const FH2UNode& Node, UWidget& Widget);
+
 	/** Best-effort pixel size of a node, used to clamp brush corner radii. */
 	FVector2D EstimateWidgetSize(const FH2UNode& Node) const;
 

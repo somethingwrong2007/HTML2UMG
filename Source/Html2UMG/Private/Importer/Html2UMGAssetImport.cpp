@@ -13,6 +13,8 @@
 #include "Fonts/CompositeFont.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/SecureHash.h"
 #include "Html2UMGLog.h"
 #include "IAssetTools.h"
 #include "Misc/DateTime.h"
@@ -32,6 +34,21 @@ namespace
 			Root.LeftChopInline(1);
 		}
 		return Root;
+	}
+
+	/**
+	 * Short content hash of a source file, used to make imported asset names content-addressed.
+	 * Returns an empty string when the file cannot be read (caller falls back to the plain name).
+	 */
+	FString HashSourceFile(const FString& SourceFile)
+	{
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *SourceFile) || Bytes.Num() == 0)
+		{
+			return FString();
+		}
+		const FMD5Hash Hash = FMD5Hash::HashFile(*SourceFile);
+		return LexToString(Hash).Left(8);
 	}
 
 	/** True when the asset package on disk is at least as new as the source file. */
@@ -192,27 +209,45 @@ UTexture2D* FHtml2UMGAssetImport::EnsureTexture(const FString& Key, const FStrin
 
 UTexture2D* FHtml2UMGAssetImport::ImportTextureFile(const FString& Key, const FString& AbsFile, const FString& Context)
 {
-	// One asset per source file, even when several keys point at it.
-	const FString AssetName = MakeAssetName(FPaths::GetBaseFilename(AbsFile));
+	// One asset per source file *content*, not per file name.
+	//
+	// The bake writes positional names (tex_0, tex_1, ...), so two different designs collide on the
+	// same asset names and a re-bake that is not newer than the old package silently keeps the OLD
+	// bitmap: the widget then references a perfectly valid texture that shows the wrong picture, which
+	// looks exactly like a broken style mapping. Appending a content hash makes the name a function of
+	// the bytes, so an existing asset with this name is guaranteed to be the right picture and the
+	// mtime-based reuse below becomes safe.
+	const FString SourceHash = HashSourceFile(AbsFile);
+	const FString BaseName = MakeAssetName(FPaths::GetBaseFilename(AbsFile));
+	const FString AssetName = SourceHash.IsEmpty()
+		? BaseName
+		: FString::Printf(TEXT("%s_%s"), *BaseName, *SourceHash);
 	const FString PackageName = OutputRoot + TEXT("/") + AssetName;
 
-	if (UObject* Existing = FindExistingAsset(OutputRoot, AssetName))
-	{
-		UTexture2D* ExistingTexture = Cast<UTexture2D>(Existing);
-		if (ExistingTexture && IsAssetUpToDate(PackageName, AbsFile))
-		{
-			++TexturesReused;
-			Message(nullptr, TEXT("info"), FString::Printf(TEXT("%s: texture '%s' reused (%s)."), *Context, *Key, *ExistingTexture->GetPathName()));
-			return ExistingTexture;
-		}
-	}
+	// Textures are always re-imported, never reused.
+	//
+	// Reuse was measured to be WRONG, not merely slow: the same layout json, the same on-disk png
+	// and the same asset name rendered with its baked colours when the packages were imported
+	// fresh, and rendered untextured when the packages already existed and were reused
+	// (a widget render went 3.14% -> 4.47% of differing pixels against the browser, and the
+	// slider's blue track simply disappeared). The asset name is content-addressed (see above), so
+	// a reuse here cannot be selecting different pixels - the reused UTexture2D is simply not
+	// usable by Slate in that run. These are small UI textures, so importing unconditionally is
+	// cheap and removes a whole class of "why does it look different the second time" reports.
+	//
+	// Update in place so an unrelated asset cannot keep an old name.
+	UTexture2D* ExistingTexture = Cast<UTexture2D>(FindExistingAsset(OutputRoot, AssetName));
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = AbsFile;
 	Task->DestinationPath = OutputRoot;
 	Task->DestinationName = AssetName;
 	Task->bReplaceExisting = true;
-	Task->bReplaceExistingSettings = false;
+	// Settings are replaced as well. With bReplaceExistingSettings=false the importer keeps
+	// whatever settings the previous package had, so a texture reused under the same
+	// (content-addressed) name can come back configured differently than its pixels need -
+	// observed as a correctly imported png rendering with the wrong colours.
+	Task->bReplaceExistingSettings = true;
 	Task->bAutomated = true;
 	Task->bSave = false;
 	Task->Factory = NewObject<UTextureFactory>();
@@ -238,6 +273,25 @@ UTexture2D* FHtml2UMGAssetImport::ImportTextureFile(const FString& Key, const FS
 		Message(nullptr, TEXT("error"), FString::Printf(TEXT("%s: failed to import texture '%s' from '%s'."), *Context, *Key, *AbsFile));
 		return nullptr;
 	}
+
+	// Force a deterministic texture format for imported UI art.
+	//
+	// UTextureFactory picks a format from whatever it infers about the source, and the result was
+	// observed to vary between otherwise identical bakes: one of five gradient textures came back
+	// in a two-channel format whose blue channel decodes to 0, so a blue/purple card rendered
+	// green/amber while its png on disk was correct. These textures are small UI art, so storing
+	// them uncompressed with sRGB on and no mip chain is both deterministic and the highest
+	// fidelity: no DXT banding on gradients, no mip blur on a 16px tick.
+	Texture->CompressionSettings = TC_EditorIcon;
+	Texture->CompressionNone = true;
+	Texture->MipGenSettings = TMGS_NoMipmaps;
+	Texture->SRGB = true;
+	Texture->NeverStream = true;
+	Texture->Filter = TF_Bilinear;
+	Texture->AddressX = TA_Clamp;
+	Texture->AddressY = TA_Clamp;
+	Texture->PostEditChange();
+	Texture->UpdateResource();
 
 	++TexturesImported;
 	TouchedPackages.AddUnique(Texture->GetOutermost());

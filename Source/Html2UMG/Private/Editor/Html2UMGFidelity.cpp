@@ -4,6 +4,12 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Components/PanelWidget.h"
+#include "Components/Widget.h"
+#include "Widgets/SWidget.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Containers/ArrayView.h"
 #include "Editor.h"
 #include "Engine/Texture.h"
@@ -17,6 +23,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/SlateRenderer.h"
+#include "HAL/IConsoleManager.h"
+#include "Importer/Html2UMGImporter.h"
+#include "Misc/CString.h"
 #include "RenderingThread.h"
 #include "Slate/WidgetRenderer.h"
 #include "TextureResource.h"
@@ -28,6 +37,79 @@ namespace
 {
 	/** Render targets and PNG rows both blow up beyond this; keep the request sane. */
 	constexpr int32 MaxRenderDimension = 8192;
+
+	/** Diagnostics for the geometry dump: how many widgets were reachable and actually measured. */
+	int32 GGeometryWidgetCount = 0;
+	int32 GGeometryWithSlateCount = 0;
+	int32 GGeometryWithSizeCount = 0;
+
+	/**
+	 * Records the layout Slate actually produced for Widget and its descendants.
+	 * Absolute position/size are in render-target pixels because the offscreen renderer's
+	 * origin is the top-left of the render target.
+	 */
+	void WalkWidgetGeometry(UWidget* Widget, UWidget* Parent, TArray<TSharedPtr<FJsonValue>>& Out, int32 Depth)
+	{
+		if (Widget == nullptr || Depth > 128)
+		{
+			return;
+		}
+
+		// Geometry has to come from the paint pass, not from UWidget::GetCachedGeometry():
+		// SWidget::GetCachedGeometry() returns PersistentState.DesktopGeometry, which only exists
+		// when a real desktop transform is in play and is therefore zero for an offscreen
+		// FWidgetRenderer draw. Paint stores the arrange result in PersistentState.AllottedGeometry,
+		// and that pass did run - it produced the png.
+		++GGeometryWidgetCount;
+
+		FGeometry Geometry;
+		if (const TSharedPtr<SWidget> SlateWidget = Widget->GetCachedWidget())
+		{
+			++GGeometryWithSlateCount;
+			Geometry = SlateWidget->GetPersistentState().AllottedGeometry;
+		}
+		if (!Geometry.GetAbsoluteSize().IsNearlyZero())
+		{
+			++GGeometryWithSizeCount;
+		}
+		if (Geometry.GetAbsoluteSize().IsNearlyZero())
+		{
+			Geometry = Widget->GetCachedGeometry();
+		}
+		const FVector2D Position = Geometry.GetAbsolutePosition();
+		const FVector2D Size = Geometry.GetAbsoluteSize();
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Widget->GetName());
+		Entry->SetStringField(TEXT("class"), Widget->GetClass()->GetName());
+		if (Parent != nullptr)
+		{
+			Entry->SetStringField(TEXT("parent"), Parent->GetName());
+		}
+		Entry->SetNumberField(TEXT("x"), Position.X);
+		Entry->SetNumberField(TEXT("y"), Position.Y);
+		Entry->SetNumberField(TEXT("w"), Size.X);
+		Entry->SetNumberField(TEXT("h"), Size.Y);
+		// A widget that never got painted has a zero-area cached geometry; callers must not
+		// read that as "laid out at the origin".
+		Entry->SetBoolField(TEXT("painted"), Size.X > 0.0 || Size.Y > 0.0);
+		Out.Add(MakeShared<FJsonValueObject>(Entry));
+
+		if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+		{
+			const int32 ChildCount = Panel->GetChildrenCount();
+			for (int32 Index = 0; Index < ChildCount; ++Index)
+			{
+				WalkWidgetGeometry(Panel->GetChildAt(Index), Widget, Out, Depth + 1);
+			}
+			return;
+		}
+
+		if (UUserWidget* Nested = Cast<UUserWidget>(Widget))
+		{
+			WalkWidgetGeometry(Nested->GetRootWidget(), Widget, Out, Depth + 1);
+		}
+	}
 
 	FString NormalizeObjectPath(const FString& InPath)
 	{
@@ -68,7 +150,7 @@ bool FHtml2UMGFidelity::RenderWidgetToFolder(const FString& BlueprintPath, FVect
 	return RenderWidgetToFile(BlueprintPath, Size, OutPngFile, OutError);
 }
 
-bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector2D Size, const FString& OutPng, FString& OutError)
+bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector2D Size, const FString& OutPng, FString& OutError, const FString& OutGeometryJson)
 {
 	OutError.Reset();
 
@@ -172,11 +254,49 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 	}
 
 	FWidgetRenderer WidgetRenderer(/*bUseGammaCorrection=*/ true, /*bInClearTarget=*/ true);
-	{
-		const TSharedRef<SWidget> SlateWidget = UserWidget->TakeWidget();
-		WidgetRenderer.DrawWidget(RenderTarget, SlateWidget, DrawSize, /*DeltaTime=*/ 0.0f, /*bDeferRenderTargetUpdate=*/ false);
-	}
+
+	// Keep the Slate tree alive for the rest of the function on purpose.
+	// TakeWidget() hands back the only STRONG reference: UWidget::MyWidget is a TWeakPtr, so once
+	// this local TSharedRef goes out of scope the whole tree is destroyed and every
+	// UWidget::GetCachedWidget() returns null. That is why an earlier version of the geometry dump
+	// reported 67 widgets but measured zero of them.
+	const TSharedRef<SWidget> SlateWidget = UserWidget->TakeWidget();
+	WidgetRenderer.DrawWidget(RenderTarget, SlateWidget, DrawSize, /*DeltaTime=*/ 0.0f, /*bDeferRenderTargetUpdate=*/ false);
 	FlushRenderingCommands();
+
+	// 4b) Optionally dump the geometry Slate just computed for every widget. This is the only
+	// honest source of "where did UMG actually put this": the importer's slot values are inputs,
+	// but auto-sized text, container padding and desired-size rounding only exist after layout.
+	if (!OutGeometryJson.IsEmpty())
+	{
+		TArray<TSharedPtr<FJsonValue>> Entries;
+		if (UWidget* RootWidget = UserWidget->GetRootWidget())
+		{
+			WalkWidgetGeometry(RootWidget, nullptr, Entries, 0);
+		}
+
+		TSharedPtr<FJsonObject> RootObject = MakeShared<FJsonObject>();
+		RootObject->SetStringField(TEXT("blueprint"), BlueprintPath);
+		RootObject->SetNumberField(TEXT("width"), Width);
+		RootObject->SetNumberField(TEXT("height"), Height);
+		RootObject->SetArrayField(TEXT("widgets"), Entries);
+
+		FString Serialized;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+		if (FJsonSerializer::Serialize(RootObject.ToSharedRef(), Writer))
+		{
+			const FString GeometryFile = FPaths::ConvertRelativePathToFull(OutGeometryJson);
+			const FString GeometryDir = FPaths::GetPath(GeometryFile);
+			if (!GeometryDir.IsEmpty())
+			{
+				IFileManager::Get().MakeDirectory(*GeometryDir, true);
+			}
+			FFileHelper::SaveStringToFile(Serialized, *GeometryFile);
+			UE_LOG(LogHtml2UMG, Log,
+				TEXT("Html2UMG fidelity: geometry of %d widget(s) -> '%s' (slate=%d, measured=%d)."),
+				Entries.Num(), *GeometryFile, GGeometryWithSlateCount, GGeometryWithSizeCount);
+		}
+	}
 
 	// 5) Read back the pixels.
 	FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
@@ -253,3 +373,114 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 	UE_LOG(LogHtml2UMG, Log, TEXT("Html2UMG fidelity: rendered '%s' to '%s' (%dx%d)."), *BlueprintPath, *OutputFile, Width, Height);
 	return true;
 }
+
+namespace
+{
+	/** "1920x1080" -> FVector2D, falling back to 1920x1080. */
+	FVector2D ParseRenderSize(const FString& InText)
+	{
+		FString Left;
+		FString Right;
+		if (InText.Split(TEXT("x"), &Left, &Right))
+		{
+			const double ParsedWidth = FCString::Atod(*Left);
+			const double ParsedHeight = FCString::Atod(*Right);
+			if (ParsedWidth > 0.0 && ParsedHeight > 0.0)
+			{
+				return FVector2D(ParsedWidth, ParsedHeight);
+			}
+		}
+		return FVector2D(1920.0, 1080.0);
+	}
+
+	/**
+	 * Html2UMG.RenderGeometry <blueprint> <out.png> <out-geometry.json> [WxH]
+	 *
+	 * Renders like Html2UMG.RenderPng but also writes the geometry every widget was laid out
+	 * at, so a layout audit can compare UMG rects against the browser's rects numerically
+	 * instead of by eye.
+	 */
+	void RenderGeometryCommand(const TArray<FString>& Args)
+	{
+		if (Args.Num() < 3)
+		{
+			UE_LOG(LogHtml2UMG, Warning,
+				TEXT("Usage: Html2UMG.RenderGeometry <blueprintPath> <out.png> <out-geometry.json> [WxH]"));
+			return;
+		}
+
+		const FString BlueprintPath = Args[0];
+		FString OutPng = Args[1];
+		FString OutGeometry = Args[2];
+		OutPng.TrimQuotesInline();
+		OutGeometry.TrimQuotesInline();
+		const FVector2D Size = Args.Num() >= 4 ? ParseRenderSize(Args[3]) : FVector2D(1920.0, 1080.0);
+
+		FString Error;
+		if (FHtml2UMGFidelity::RenderWidgetToFile(BlueprintPath, Size, OutPng, Error, OutGeometry))
+		{
+			UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.RenderGeometry: SUCCESS -> %s / %s"), *OutPng, *OutGeometry);
+		}
+		else
+		{
+			UE_LOG(LogHtml2UMG, Error, TEXT("Html2UMG.RenderGeometry: FAILED - %s"), *Error);
+		}
+	}
+
+	/** Like Html2UMG.ImportAndRender but also dumps geometry, so one editor run proves the layout. */
+	void ImportRenderGeometryCommand(const TArray<FString>& Args)
+	{
+		if (Args.Num() < 4)
+		{
+			UE_LOG(LogHtml2UMG, Warning,
+				TEXT("Usage: Html2UMG.ImportRenderGeometry <layout.json> <blueprintPath> <out.png> <out-geometry.json> [WxH]"));
+			return;
+		}
+
+		FString JsonFile = Args[0];
+		FString OutPng = Args[2];
+		FString OutGeometry = Args[3];
+		JsonFile.TrimQuotesInline();
+		OutPng.TrimQuotesInline();
+		OutGeometry.TrimQuotesInline();
+		const FString BlueprintPath = Args[1];
+		const FVector2D Size = Args.Num() >= 5 ? ParseRenderSize(Args[4]) : FVector2D(1920.0, 1080.0);
+
+		FH2UImportOptions Options;
+		Options.BlueprintPath = BlueprintPath;
+		Options.bCompile = true;
+		Options.bSave = true;
+
+		FH2UImportResult Result;
+		const bool bImported = FHtml2UMGImporter::ImportLayoutFile(JsonFile, Options, Result);
+		UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.ImportRenderGeometry: import %s (%d created, %d error(s))"),
+			bImported ? TEXT("SUCCESS") : TEXT("FAILED"), Result.WidgetsCreated, Result.ErrorCount());
+		if (!bImported)
+		{
+			return;
+		}
+
+		FString Error;
+		const FString RenderTarget = Result.BlueprintPath.IsEmpty() ? BlueprintPath : Result.BlueprintPath;
+		if (FHtml2UMGFidelity::RenderWidgetToFile(RenderTarget, Size, OutPng, Error, OutGeometry))
+		{
+			UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.ImportRenderGeometry: SUCCESS -> %s / %s"), *OutPng, *OutGeometry);
+		}
+		else
+		{
+			UE_LOG(LogHtml2UMG, Error, TEXT("Html2UMG.ImportRenderGeometry: render FAILED - %s"), *Error);
+		}
+	}
+}
+
+static FAutoConsoleCommand GRenderGeometryCommand(
+	TEXT("Html2UMG.RenderGeometry"),
+	TEXT("Renders a Widget Blueprint to a PNG and dumps the laid-out geometry of every widget. ")
+	TEXT("Usage: Html2UMG.RenderGeometry <blueprintPath> <out.png> <out-geometry.json> [WxH]"),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&RenderGeometryCommand));
+
+static FAutoConsoleCommand GImportRenderGeometryCommand(
+	TEXT("Html2UMG.ImportRenderGeometry"),
+	TEXT("Imports a layout json, renders it and dumps the laid-out geometry. ")
+	TEXT("Usage: Html2UMG.ImportRenderGeometry <layout.json> <blueprintPath> <out.png> <out-geometry.json> [WxH]"),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&ImportRenderGeometryCommand));

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>08 effects</title>
+<style>
+  /* Gradients, backdrop blur and shadows: the paints Slate has no first-class model for. */
+  html, body { margin: 0; width: 1920px; height: 1080px; }
+  body {
+    background: linear-gradient(120deg, #0b1020 0%, #12243d 45%, #2a1146 100%);
+    font-family: "Segoe UI", sans-serif; color: #e6edf3;
+  }
+
+  /* 1. linear gradient card with rounded corners */
+  #gradCard {
+    position: absolute; left: 60px; top: 60px; width: 420px; height: 200px;
+    background: linear-gradient(135deg, #1f6feb 0%, #7b2bd6 100%);
+    border-radius: 16px;
+    padding: 24px;
+  }
+  #gradCard .title { font-size: 24px; font-weight: 700; letter-spacing: 1px; }
+  #gradCard .sub { font-size: 13px; opacity: 0.85; margin-top: 8px; }
+
+  /* 2. three-stop gradient with a hard colour stop */
+  #stops {
+    position: absolute; left: 520px; top: 60px; width: 420px; height: 200px;
+    background: linear-gradient(90deg, #0d1117 0%, #0d1117 40%, #3fb950 40%, #3fb950 100%);
+    border-radius: 10px;
+  }
+
+  /* 3. radial gradient orb */
+  #orb {
+    position: absolute; left: 980px; top: 60px; width: 200px; height: 200px;
+    background: radial-gradient(circle at 35% 30%, #ffd166 0%, #ef476f 55%, #1b0b1e 100%);
+    border-radius: 100px;
+  }
+
+  /* 4. backdrop blur: a translucent panel over the colourful body */
+  #glass {
+    position: absolute; left: 1230px; top: 60px; width: 400px; height: 200px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 16px;
+    backdrop-filter: blur(18px);
+    padding: 22px;
+  }
+  #glass .label { font-size: 14px; letter-spacing: 2px; color: #dbe7f3; }
+
+  /* 5. drop shadow card */
+  #shadowed {
+    position: absolute; left: 60px; top: 320px; width: 420px; height: 160px;
+    background: #161b22; border-radius: 12px; border: 1px solid #30363d;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.65);
+    padding: 20px;
+  }
+
+  /* 6. gradient + inner glass strip, to check paint + blur together */
+  #strip {
+    position: absolute; left: 520px; top: 320px; width: 1110px; height: 120px;
+    background: linear-gradient(90deg, #1f6feb 0%, #3fb950 50%, #d29922 100%);
+    border-radius: 12px;
+    backdrop-filter: blur(6px);
+  }
+</style>
+</head>
+<body>
+  <div id="gradCard">
+    <div class="title">GRADIENT CARD</div>
+    <div class="sub">linear-gradient(135deg, #1f6feb, #7b2bd6)</div>
+  </div>
+  <div id="stops"></div>
+  <div id="orb"></div>
+  <div id="glass">
+    <div class="label">BACKDROP BLUR 18px</div>
+  </div>
+  <div id="shadowed">DROP SHADOW</div>
+  <div id="strip"></div>
+</body>
+</html>
