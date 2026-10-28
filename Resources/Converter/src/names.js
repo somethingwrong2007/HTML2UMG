@@ -30,7 +30,6 @@ const ROLE_SUFFIX = Object.freeze({
   blur: '_Blur',     // BackgroundBlur wrapper for backdrop-filter: blur()
   rel: '_Rel',       // H2URelativeBox wrapper (--layout=responsive only)
   flow: '_Flow',     // flow child of the CanvasPanel that also hosts absolute children
-  wrap: '_Wrap',     // H2UTextWrapBox wrapper around a wrapping TextBlock
   row: '_Row',       // spacer row that expresses a cross-axis percentage
   left: '_L',        // spacer before the child inside that row
   right: '_R',       // spacer after the child inside that row

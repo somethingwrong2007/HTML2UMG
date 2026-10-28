@@ -247,28 +247,24 @@ skyline 定宽稿 1280×720 从 25.76% 降到 2.4% 量级，而 1920/2560/1440 �
 **两种模式都发**：这是引擎默认值的陷阱（换一份稿子就翻车），不是响应式专用；exact 模式的
 `01-flex` 只是恰好一行放得下才没暴露（它的 `Tags` 现在 `WrapSize=1206` → 1 行 / 24px）。
 
-### 8.2.1 responsive 换成 `H2UWrapBox`（根治"高度过期"）
+### 8.2.1 不需要运行期 WrapBox：引擎自己会在第二帧收敛
 
-`WrapSize` 是**设计期常量**：换分辨率时 arrange 会按新宽度重排，但 **desired 高度仍是旧的**
-（父级拿到过期值，卡片换列了而容器高度没变）。所以 `--layout=responsive` 下把 `WrapBox` 换成
-`/Script/Html2UMGRuntime.H2UWrapBox`（`UWrapBox` 子类，槽位仍是 `UWrapBoxSlot`）：
+这里曾经有一个 `H2UWrapBox`（`UWrapBox` 子类，用上一次 arrange 宽重算 desired 高度），**已删除**。
 
-```json
-{ "class": "H2UWrapBox", "name": "Cards",
-  "properties": { "InnerSlotPadding": [16,16], "bExplicitWrapSize": false,
-                  "WrapSize": 1632, "DesignWrapWidth": 1632 } }
-```
+`WrapSize` 确实是设计期常量，但 `SWrapBox::Tick` 在 `bUseAllottedSize`（= `bExplicitWrapSize`
+为 false）时会把 allotted 宽度写进 `PreferredSize`，而这个属性声明为
+`EInvalidateWidgetReason::Layout` —— 属性一变布局失效，下一趟 prepass 就按新宽度重算行数与
+desired 高度。所以普通 `WrapBox` + `WrapSize=设计内容宽` 就够了：
 
-`DesignWrapWidth` 是主依据（= 设计内容宽，与 `H2UTextWrapBox` 同源）；它在 `ComputeDesiredSize`
-里把「上一次 arrange 宽 / 首帧 `DesignWrapWidth`」写进 `PreferredSize` 再调父类，并关掉引擎
-"Tick 才写 PreferredSize"的一帧滞后。`WrapSize` 保留作无 hint 时的兜底。
-**exact 模式仍发普通 `WrapBox`**（`WrapSize` = 设计内容宽），11 页 exact 基线逐字节不动。
+| 场景 | 实测 |
+|---|---|
+| 合成稿 1920（4 行） | 第 1 帧 592，第 2 帧 592 |
+| 合成稿 1280（6 行） | 第 1 帧 592（设计宽），**第 2 帧 896** |
+| 12-responsive @1280 的 `Cards` | 第 1 帧 458，**第 2 帧 616**（与浏览器一致） |
 
-> **结论（不是缺陷）**：`WrapBox` 的高度与行数在运行时**第二帧**收敛。Slate 是「子先算 desired、
-> 父 arrange 才给宽度」的单帧结构，第一帧只能拿 `DesignWrapWidth` 这个设计期 hint 估行数；
-> `STextBlock::AutoWrapText` 的官方注释同样承认「晚一帧」。**单帧离屏截图会看到设计宽下的高度**
-> （例如 12-responsive @1280 的 `Cards` 单帧值 458，第二帧才变成 616）——按这个口径记录即可，
-> 不要为此改 `DesignWrapWidth` 的语义。
+> **结论（不是缺陷）**：高度与行数在**第二帧**收敛。Slate 是「子先算 desired、父 arrange 才给宽度」
+> 的单帧结构；`STextBlock::AutoWrapText` 的官方注释同样承认「晚一帧」。**单帧离屏截图会看到设计宽下
+> 的高度**——验收要么跑两帧（`Html2UMG.RenderFrames`，默认 2），要么按这个口径记录。
 
 ### 8.2.2 绝对定位的基准盒：CanvasPanel 必须站在 padding 盒上
 
@@ -306,27 +302,28 @@ skyline 定宽稿 1280×720 从 25.76% 降到 2.4% 量级，而 1920/2560/1440 �
 `canvasPad = 0`、`Border.Padding` 仍是 border 宽，槽只按 border 修正 ±1px 级偏差 ——
 `02-absolute` / `07-anchors` 逐字节相同，`03-dashboard` 有 3 个槽按 border 修正（`#horizon` 的
 `left:8%` 从 0.84 变 0，即之前多算了 1px border）。
-### 8.3 段落换行要用 `H2UTextWrapBox`
+### 8.3 段落折行也不需要运行期控件
 
-TextBlock 自己解决不了"按分配宽度折行"：VerticalBox 的 `ComputeDesiredSize` **不给宽度约束**，
-所以块在 desired 阶段按 1 行算高，arrange 阶段真的折行就被裁掉（实测 `.zh` 1 行、卡片 98px，
-浏览器 3 行、142px）。
+TextBlock 在 VerticalBox 的 Automatic 槽里 desired 阶段**拿不到宽度约束**，所以第一帧按 1 行算高
+（实测 `.zh` 1 行、卡片 98px）。这曾经是 `H2UTextWrapBox` 存在的理由——**已删除**，因为
+`STextBlock::OnPaint` 自己写了：
 
-转换器在 responsive 下把**浏览器实测行数 ≥ 2** 的段落包成
-`/Script/Html2UMGRuntime.H2UTextWrapBox`（单行短标签不包，避免多余层级）：
+> "Due to the nature of wrapping and layout, we may have been arranged in a different box than what
+> we were cached with. Which might update wrapping…"
 
-| 属性 | 类型 | 语义 |
+它在绘制时按**真实 allotted 宽度**重排，desired size 变了就 `Invalidate(EInvalidateWidgetReason::Layout)`，
+第二帧父级重新问一次就成了：
+
+| 组（同一段 79 汉字，SizeBox 固定 432 宽） | 第 1 帧 | 第 2 帧 |
 |---|---|---|
-| `DesignWrapWidth` | px（**必填**） | 该段落在设计视口下的内容盒宽度（`rec.rect[2] − padding − border`），控件首帧据此算行数 |
-| `bAutoWrap` | bool | 默认 true；CSS 段落没有 `white-space:nowrap` |
-| `ContentPadding` | [l,t,r,b] | 可选，本转换器不写：元素的 padding 已由它自己的 Border 承担，`DesignWrapWidth` 也是在内侧量的 |
+| `AutoWrapText`，不给 `WrapTextAt` | 17px（1 行，被裁） | **51px（3 行）** |
+| `WrapTextAt=432`（exact 模式的做法） | 51px | 51px |
 
-内部 TextBlock **不发** `WrapTextAt`（发了就冻结设计宽度）；控件每帧把自己的 allotted 宽写进去。
-`HTML2UMG_TEXT_WRAP_BOX=0` 是排查用的关闭开关。
+所以 responsive 模式下**什么都不用发**：不写 `WrapTextAt`（避免冻结设计宽度），只保留
+`AutoWrapText=true`，第二帧就按真实宽度折行。这也让"临界段落"（设计宽度下 1 行、1280 下会折行）
+自动被覆盖——之前那个"行数 ≥ 2 才包"的判据连同缺口一起消失了。
 
-**已知缺口（临界段落）**：判据是"设计视口行数 ≥ 2"，所以"设计宽度下 1 行、1280 下会折行"的
-段落目前**不会**被包（运行期不折行 → 溢出）。要覆盖它，判据应改成"**设计视口行数 ≥ 2**
-**或**（宽度在 probe 之间会变 **且** 单行自然宽 > probe 最小内容宽）"——两个量都已有：
-`samples` 里有 probe 宽度，`textLineCount` 已经量过单行宽。不要用"字数 > N"这种判据
-（中英文宽度差 2 倍），也不要对所有 TextBlock 都包（每个多一层 panel + 一次 SlatePrepass）。
+> 代价只有一个：**首帧**（_第一帧_）文本可能仍按 1 行布局。游戏里一帧不可见；但如果要在
+> "widget 还没 tick 过"时截图验收，要么跑两帧（`Html2UMG.RenderFrames`），要么走 exact 模式
+> （烘焙 `WrapTextAt`，首帧即正确，代价是换分辨率不重排）。
 

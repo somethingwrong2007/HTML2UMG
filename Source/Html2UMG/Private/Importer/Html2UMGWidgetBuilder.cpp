@@ -28,7 +28,7 @@
 
 namespace
 {
-	constexpr int32 kMaxTreeDepth = 64;
+	constexpr int32 kMaxWidgetTreeDepth = 64;
 
 	int32 EditDistance(const FString& A, const FString& B)
 	{
@@ -846,9 +846,9 @@ FVector2D FHtml2UMGWidgetBuilder::EstimateWidgetSize(const FH2UNode& Node) const
 
 UWidget* FHtml2UMGWidgetBuilder::BuildNode(const FH2UNode& Node, UWidget* ParentWidget, int32 Depth)
 {
-	if (Depth > kMaxTreeDepth)
+	if (Depth > kMaxWidgetTreeDepth)
 	{
-		Error(FString::Printf(TEXT("%s: widget tree deeper than %d, aborting this subtree."), *NodeContext(Node), kMaxTreeDepth));
+		Error(FString::Printf(TEXT("%s: widget tree deeper than %d, aborting this subtree."), *NodeContext(Node), kMaxWidgetTreeDepth));
 		return nullptr;
 	}
 

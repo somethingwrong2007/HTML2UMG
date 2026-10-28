@@ -36,13 +36,6 @@ const KNOWN_CLASSES = new Set([
   // one percentage + a min/max clamp into a run-time size. Emitted by --layout=responsive only;
   // see Docs/Html2UMG_RelativeSize.md.
   'H2URelativeBox',
-  // Project widget (/Script/Html2UMGRuntime.H2UTextWrapBox): single-content panel that feeds its
-  // allotted width to an inner TextBlock's WrapTextAt, so a paragraph really wraps at run time.
-  // Emitted by --layout=responsive only with HTML2UMG_TEXT_WRAP_BOX=1 until the control ships.
-  'H2UTextWrapBox',
-  // Project widget (/Script/Html2UMGRuntime.H2UWrapBox, a UWrapBox subclass): recomputes its
-  // desired height from the width it was last arranged at. Replaces WrapBox under --layout=responsive.
-  'H2UWrapBox',
 ]);
 
 /** Slot class implied by the *parent* container. */
@@ -63,9 +56,7 @@ const SLOT_KEYS = {
   BackgroundBlur: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   // UH2URelativeBox is a UContentWidget (like Border): it takes the ordinary single-child slot.
   H2URelativeBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
-  H2UTextWrapBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   // A UWrapBox subclass: children carry the ordinary UWrapBoxSlot payload.
-  H2UWrapBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment', 'FillSpanWhenLessThan', 'bFillEmptySpace', 'bForceNewLine'],
 };
 
 /** Slot class name used in messages. */
@@ -79,14 +70,12 @@ const SLOT_CLASS = {
   // Declared explicitly rather than relying on the `${parentClass}Slot` fallback, because the
   // runtime class registers its slot as UH2URelativeBoxSlot.
   H2URelativeBox: 'H2URelativeBoxSlot',
-  H2UTextWrapBox: 'H2UTextWrapBoxSlot',
-  H2UWrapBox: 'WrapBoxSlot',
 };
 
 /** Widgets that can hold at most one child / no children at all. */
 const MAX_CHILDREN = {
   Border: 1, SizeBox: 1, ScaleBox: 1, ScrollBox: 1, Button: 1, RetainerBox: 1, SafeZone: 1, BackgroundBlur: 1,
-  H2URelativeBox: 1, H2UTextWrapBox: 1,
+  H2URelativeBox: 1,
   TextBlock: 0, Image: 0, ProgressBar: 0, EditableTextBox: 0, ComboBoxString: 0, SpinBox: 0,
   CheckBox: 0, Slider: 0, Spacer: 0, Throbber: 0,
 };

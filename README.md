@@ -245,7 +245,7 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 | 双侧 `inset` | Canvas 槽拉伸锚（`Anchors.Minimum != Maximum`） |
 | 单子项 `justify-content: center/end` | Overlay 槽（真居中，替代烘焙偏移） |
 | `flex-wrap: wrap` | WrapBox（`InnerSlotPadding` 是唯一间距来源，槽位 padding 归零） |
-| 折行文本 | `H2UTextWrapBox` |
+| 折行文本 | `AutoWrapText`（原生，第二帧按真实宽度重排） |
 | `min(1240px, 92vw)` / `clamp()` | `H2URelativeBox`（百分比 + px 上下限，运行期算） |
 
 `position: absolute` 的基准是**内边距盒**（CSS 规范），所以承载画布的容器会把
@@ -273,8 +273,14 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 所以离线验收**必须跑两帧**（`Html2UMG.RenderFrames`，默认 2）。单帧截图会系统性地低估自动折行文本和
 换行盒——"文本不换行、WrapBox 高度不跟着变"的结论就是这样误判出来的。
 
-现在只剩 `H2URelativeBox`，而且只有设计稿真的写了**混合单位尺寸**（`min(1240px, 92vw)`、`clamp()`）
-才会出现。纯百分比、纯 px、min/max 单独用、居中、换行、拉伸锚，全都用原生控件。
+现在 Runtime 模块里**只剩 `H2URelativeBox`**（另外两个是删掉的：源码、类表、转换器分支一起清掉，
+不是留着不用），而且只有设计稿真的写了**混合单位尺寸**（`min(1240px, 92vw)`、`clamp()`）才会出现。
+纯百分比、纯 px、min/max 单独用、居中、换行、拉伸锚，全都用原生控件。
+
+删掉那两个之后同一份流体稿的实测没有变化（1920 = 1.48%、1280 = 3.22%），因为它们本来就不再被发出。
+
+连这一个也不想要的话：走 `--layout=exact` 就是**零依赖**；流体稿用 `--runtime=native` 则退化为
+"保留夹紧后的 px + 居中"（日志会写明）。
 
 ### 混合单位尺寸这一件事
 

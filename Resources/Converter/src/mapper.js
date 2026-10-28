@@ -46,26 +46,12 @@ const CLASS = {
   // otherwise) and the JSON stays portable.
   PAGE_SWITCHER: 'PageSwitcher',
   RELATIVE_BOX: 'H2URelativeBox',
-  // Project widget (/Script/Html2UMGRuntime.H2UTextWrapBox): pushes its own allotted width into an
-  // inner TextBlock's WrapTextAt, so a paragraph wraps at the width it is actually given. A plain
-  // TextBlock cannot: a VerticalBox computes desired size with no width constraint, so the block
-  // reports one line and the arranged text is clipped. Emitted only by --layout=responsive and
-  // only once the runtime control exists (see textWrapBoxMode()).
-  TEXT_WRAP_BOX: 'H2UTextWrapBox',
-  // Project widget (/Script/Html2UMGRuntime.H2UWrapBox, a UWrapBox subclass): recomputes its
-  // desired size from the width it was last arranged at, so a wrap panel's reported HEIGHT follows
-  // the run-time column count instead of the design-time WrapSize. Emitted only by
-  // --layout=responsive; exact keeps the plain WrapBox so those baselines stay byte-identical.
-  WRAP_BOX_RUNTIME: 'H2UWrapBox',
 };
 
 /** Container class -> box orientation ('v' | 'h' | 'w' for WrapBox). */
 const BOX_SLOTS = {
   [CLASS.VERTICAL]: 'v',
   [CLASS.HORIZONTAL]: 'h',
-  // The runtime wrap panel is a UWrapBox subclass, so its children are UWrapBoxSlots (same
-  // Padding/HAlign/VAlign payload); only the class name differs.
-  [CLASS.WRAP_BOX_RUNTIME]: 'w',
   [CLASS.WRAP]: 'w',
 };
 
@@ -774,10 +760,6 @@ class Mapper {
       case CLASS.RELATIVE_BOX:
         // Single-content project panel: it derives the child's size from the space it is given and
         // aligns the child itself (ContentHAlign/ContentVAlign), so the child always fills.
-        return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
-      case CLASS.TEXT_WRAP_BOX:
-        // Single-content project panel: the inner TextBlock takes the whole allotted area and is
-        // told that width as its WrapTextAt.
         return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
       default:
         return null;
@@ -2468,45 +2450,10 @@ class Mapper {
       textLineBoxPx: this.cssLineBoxPx(textStyle, fontProps, rec, text),
       autoWrap,
     });
-    // A paragraph that really wraps needs a container that can tell Slate how wide it is: a
-    // VerticalBox computes desired size with NO width constraint, so the block reports one line and
-    // the arranged text gets clipped (measured on 12-responsive: .zh came out 1 line, card 98px
-    // instead of 3 lines / 142px). H2UTextWrapBox feeds its allotted width into the inner block's
-    // WrapTextAt each arrange. Only paragraphs the browser actually wrapped (>= 2 lines) get the
-    // wrapper: a single-line label has no reflow to gain and the extra panel would be dead weight.
-    if (autoWrap && browserLines >= 2 && this.runtimeWidgets() && this.textWrapBoxMode()) {
-      return this.wrapTextForFlow(node, rec, style, base || name);
-    }
+    // Wrapping needs no helper widget: STextBlock re-measures at the width it is arranged in during
+    // paint and invalidates layout when the line count changed, so plain AutoWrapText settles on the
+    // second frame (measured: 17px on pass 1, 51px on pass 2, identical to an explicit WrapTextAt).
     return node;
-  }
-
-  /**
-   * Wrap a wrapping TextBlock in H2UTextWrapBox (/Script/Html2UMGRuntime.H2UTextWrapBox).
-   *
-   *   ContentPadding    [l,t,r,b] - omitted: the element's own padding is already carried by its
-   *                     Border wrapper, and DesignWrapWidth is measured *inside* it
-   *   DesignWrapWidth   the content-box width the paragraph got at the design viewport; the control
-   *                     uses it for the first frame's line count, before any arrange has happened
-   *   bAutoWrap         true (the CSS paragraph is not `white-space:nowrap`)
-   *
-   * No WrapTextAt is emitted on the inner block (it would freeze the design width); the control
-   * writes the live allotted width there instead.
-   */
-  wrapTextForFlow(node, rec, style, base) {
-    // `base` is the owning element's own name, so the box is "Para_Wrap" rather than
-    // "Para_Inner_Wrap".
-    const box = this.makeNode(this.names.unique(`${base || this.ownBase(node)}${ROLE_SUFFIX.wrap}`), CLASS.TEXT_WRAP_BOX, rec, true);
-    box.properties = {
-      DesignWrapWidth: this.contentBoxWidth(rec, style),
-      bAutoWrap: true,
-    };
-    box.children = [node];
-    const meta = this.meta.get(node) || {};
-    this.meta.set(box, { rec, style: meta.style || null, kind: 'textwrapbox' });
-    this.warn(
-      `mapped: '${this.label(rec)}' wraps at run time via H2UTextWrapBox (DesignWrapWidth ${box.properties.DesignWrapWidth}px)`
-    );
-    return box;
   }
 
   /**
@@ -3007,34 +2954,9 @@ class Mapper {
     return raw === 'native' ? 'native' : 'plugin';
   }
 
-  /** True when the three /Script/Html2UMGRuntime controls may be emitted. */
+  /** True when /Script/Html2UMGRuntime may be referenced (only H2URelativeBox is left). */
   runtimeWidgets() {
     return this.responsiveMode() && this.runtimeMode() === 'plugin';
-  }
-
-  /**
-   * 'off' until /Script/Html2UMGRuntime.H2UTextWrapBox exists in the editor module.
-   *
-   * A plain TextBlock cannot wrap correctly inside a box panel: the panel asks for a desired size
-   * with no width constraint, so the block reports a single line and the wrapped text is clipped
-   * (measured on 12-responsive: .zh came out 1 line / card 98px instead of 3 lines / 142px). The
-   * runtime control fixes it by writing its allotted width into the inner block's WrapTextAt, so
-   * the value is only correct once that widget is imported. Env: HTML2UMG_TEXT_WRAP_BOX=1.
-   */
-  /**
-   * Off by default: STextBlock already re-wraps at its allotted width during paint and calls
-   * Invalidate(Layout) when the measured height changed, so plain AutoWrapText settles on the
-   * second frame (verified: 17px on pass 1, 51px on pass 2 - identical to an explicit WrapTextAt).
-   * The wrapper is kept behind HTML2UMG_TEXT_WRAP_BOX=1 for designs that must be correct on the
-   * very first frame (a widget that is screenshotted before it ever ticks).
-   */
-  textWrapBoxMode() {
-    const raw = this.opts.textWrapBox !== undefined
-      ? this.opts.textWrapBox
-      : process.env.HTML2UMG_TEXT_WRAP_BOX;
-    const text = String(raw === undefined ? '' : raw).toLowerCase();
-    if (!text) return false;
-    return text === '1' || text === 'on' || text === 'true';
   }
 
   cjkBreakMode() {
@@ -4351,7 +4273,7 @@ class Mapper {
       const gx = V.round((style.columnGap || 0) / 2, 2);
       const gy = V.round((style.rowGap || 0) / 2, 2);
       if (gx || gy) props.SlotPadding = [gx, gy, gx, gy];
-    } else if (cls === CLASS.WRAP || cls === CLASS.WRAP_BOX_RUNTIME) {
+    } else if (cls === CLASS.WRAP) {
       props.InnerSlotPadding = [V.round(style.columnGap || 0, 2), V.round(style.rowGap || 0, 2)];
       // `WrapSize` is the DESIGN content width of this container - not 0, and not the engine default.
       //
@@ -4368,12 +4290,6 @@ class Mapper {
       props.bExplicitWrapSize = false;
       const wrapSize = this.contentBoxWidth(rec, style);
       if (wrapSize > 0) props.WrapSize = wrapSize;
-      if (cls === CLASS.WRAP_BOX_RUNTIME) {
-        // The run-time panel's primary input: the design content width it should use before the
-        // first arrange (and its fallback when it has no arranged width yet). WrapSize above stays
-        // as the second-line fallback, since H2UWrapBox is a UWrapBox.
-        if (wrapSize > 0) props.DesignWrapWidth = wrapSize;
-      }
     } else if (cls === CLASS.GRID) {
       // TArray<float>: star tracks must stay proportional inside GridPanel.
       const fr = style.gridFrColumns || [];
