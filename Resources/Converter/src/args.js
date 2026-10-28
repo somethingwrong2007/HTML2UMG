@@ -44,6 +44,11 @@ Options:
   --layout <mode>           exact (default): the design is baked at --viewport.
                             responsive: no baked WrapTextAt (text wraps at run time), percentage/
                             flex widths kept, single-child centre becomes an Overlay.
+  --runtime <mode>          plugin (default): responsive output may use the three controls from the
+                            Html2UMGRuntime module (relative size / text rewrap / wrap height).
+                            native: emit stock UMG only, so the blueprint still works after the
+                            plugin is removed. Costs: text is baked at the design width, a
+                            percentage loses its px clamp, a WrapBox keeps its design height.
   --cjk-breaks <m>          policy (default): tell Slate to apply its own CJK break policy.
                             none: no break opportunities are requested for CJK runs.
   --font-policy <mode>      any (default): embed whatever the design asks for.
@@ -109,6 +114,7 @@ function parseArgs(argv) {
     textShadow: 'zero',
     lineBoxSnap: 'exact',
     layout: 'exact',
+    runtime: 'plugin',
     aspects: null,
     fontPolicy: 'any',
     fontMap: 'ignore',
@@ -229,6 +235,13 @@ function parseArgs(argv) {
         throw new ArgError('--layout: expected exact|responsive, got "' + mode + '"');
       }
       opts.layout = mode;
+    } else if (arg === '--runtime' || arg.startsWith('--runtime=')) {
+      const inline = arg.startsWith('--runtime=') ? arg.slice('--runtime='.length) : null;
+      const mode = (inline === null ? takeValue() : inline).toLowerCase();
+      if (mode !== 'plugin' && mode !== 'native') {
+        throw new ArgError('--runtime: expected plugin|native, got "' + mode + '"');
+      }
+      opts.runtime = mode;
     } else if (arg === '--aspects' || arg.startsWith('--aspects=')) {
       const inline = arg.startsWith('--aspects=') ? arg.slice('--aspects='.length) : null;
       opts.aspects = String(inline === null ? takeValue() : inline).trim();

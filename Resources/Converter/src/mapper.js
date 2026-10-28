@@ -1517,7 +1517,15 @@ class Mapper {
     const wantsBorder = !selfPainted && (style.hasVisualBox || style.hasPadding);
     // --layout=responsive: a size that only the runtime can resolve (min()/max()/clamp(), or a
     // percentage that carries a min/max clamp) becomes one H2URelativeBox instead of a px pin.
-    const relPlan = this.responsiveMode() ? this.relativeBoxPlan(rec, style, ctx.orientation) : null;
+    const relPlan = this.runtimeWidgets() ? this.relativeBoxPlan(rec, style, ctx.orientation) : null;
+    if (!relPlan && this.runtimeMode() === 'native') {
+      // stock UMG has no widget that resolves "percentage with a px clamp" at run time
+      const dropped = this.relativeBoxPlan(rec, style, ctx.orientation);
+      if (dropped) {
+        const parts = [dropped.width ? 'width:' + dropped.width.expr : null, dropped.height ? 'height:' + dropped.height.expr : null].filter(Boolean).join(' and ');
+        this.warn('approximated: ' + this.label(rec) + ' needs ' + parts + ' at run time; --runtime=native cannot express a percentage together with a px clamp, so the clamp is dropped');
+      }
+    }
     const crossPercent = this.crossAxisPercentPx(rec, style, ctx.orientation, relPlan);
     const wantsSize =
       !ctx.isRoot &&
@@ -1945,6 +1953,17 @@ class Mapper {
     // H2URelativeBox owns this axis itself (percentage AND clamp); wrapping it in spacers would
     // undo the clamp.
     if (meta.kind === 'relbox') return null;
+    // --runtime=native cannot combine a percentage with a px clamp: a spacer row would give the
+    // percentage and silently drop the clamp (measured on a 1240px-capped 92% panel: 92% of 1920 =
+    // 1766 instead of 1240, 526px too wide). Keep the provisional pin the CSS measurement produced
+    // and let the slot's cross alignment centre it: that is exactly what exact mode does, and it is
+    // right at the design size.
+    if (this.runtimeMode() === 'native' && (style.maxWidth !== null || style.minWidth !== null)) {
+      this.warn(
+        'approximated: ' + this.label(rec) + ' is width:' + Math.round(pct * 100) + '% with a px clamp; --runtime=native keeps the clamped ' + V.round(rec.rect[2], 2) + 'px'
+      );
+      return null;
+    }
     if (!rec.rect || !rec.prect || !(rec.prect[2] > 0)) return null;
     const free = Math.max(0, 1 - pct);
     let left = free / 2; // CSS default is start-aligned; use the measured offset when it is clear
@@ -2335,7 +2354,9 @@ class Mapper {
     if (autoWrap) {
       // responsive: no baked wrap width - the run-time allotted width decides, so the text
       // reflows inside the game instead of being frozen at the design width.
-      const wrapWidth = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, fontProps, text);
+      // 'native' keeps a baked WrapTextAt: stock UMG cannot re-wrap without one (measured:
+      // AutoWrapText alone reports one line), so a plugin-free build trades reflow for correctness.
+      const wrapWidth = this.runtimeWidgets() ? 0 : this.wrapTextAt(rec, style, fontProps, text);
       if (wrapWidth > 0) props.WrapTextAt = wrapWidth;
       // A space-less CJK run has no break point Slate's line breaker will use, so allow the
       // per-character fallback. Latin text is unaffected unless a single word is wider than the box.
@@ -2379,7 +2400,7 @@ class Mapper {
     // instead of 3 lines / 142px). H2UTextWrapBox feeds its allotted width into the inner block's
     // WrapTextAt each arrange. Only paragraphs the browser actually wrapped (>= 2 lines) get the
     // wrapper: a single-line label has no reflow to gain and the extra panel would be dead weight.
-    if (autoWrap && browserLines >= 2 && this.responsiveMode() && this.textWrapBoxMode()) {
+    if (autoWrap && browserLines >= 2 && this.runtimeWidgets() && this.textWrapBoxMode()) {
       return this.wrapTextForFlow(node, rec, style);
     }
     return node;
@@ -2450,7 +2471,7 @@ class Mapper {
     if (!runKeepShadow) node.properties.ShadowOffset = runShadow ? runShadow.offset : [0, 0];
     if (runShadow) node.properties.ShadowColorAndOpacity = runShadow.color;
     if (runAutoWrap) {
-      const runWrap = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, runFont, out);
+      const runWrap = this.runtimeWidgets() ? 0 : this.wrapTextAt(rec, style, runFont, out);
       if (runWrap > 0) node.properties.WrapTextAt = runWrap;
       if (this.cjkBreakMode() !== 'none') node.properties.WrappingPolicy = 'AllowPerCharacterWrapping';
     }
@@ -2887,6 +2908,32 @@ class Mapper {
   responsiveMode() {
     const raw = String(this.opts.layout || process.env.HTML2UMG_LAYOUT || 'exact').toLowerCase();
     return raw === 'responsive';
+  }
+
+  /**
+   * 'plugin' (default) or 'native'.
+   *
+   * 'plugin' is the full-fidelity path: three small controls from the Html2UMGRuntime module do the
+   * things stock UMG cannot (see the class comments at the top of this file). 'native' emits **stock
+   * UMG only**, so the produced blueprint keeps working after the plugin is removed from the
+   * project. The trade-offs are deliberate and warned about at conversion time:
+   *
+   *   text -> an explicit WrapTextAt at the design width. Measured: AutoWrapText alone never wraps
+   *           (a TextBlock in an automatic slot measures one line and gets clipped), so a native
+   *           build must bake the width and the text stops following it;
+   *   size -> percentage with a px clamp loses the clamp (the percentage wins), because a SizeBox
+   *           only clamps its desired size and a Fill slot ignores that;
+   *   wrap -> a plain WrapBox with WrapSize = design width: rows reflow at run time, the reported
+   *           height stays the design one.
+   */
+  runtimeMode() {
+    const raw = String(this.opts.runtime || process.env.HTML2UMG_RUNTIME || 'plugin').toLowerCase();
+    return raw === 'native' ? 'native' : 'plugin';
+  }
+
+  /** True when the three /Script/Html2UMGRuntime controls may be emitted. */
+  runtimeWidgets() {
+    return this.responsiveMode() && this.runtimeMode() === 'plugin';
   }
 
   /**
@@ -3965,7 +4012,7 @@ class Mapper {
         // responsive: the runtime subclass recomputes its desired HEIGHT from the width it was last
         // arranged at, so the column count (and therefore the height a parent sees) follows the
         // viewport. A plain WrapBox can only report the design-time WrapSize it was born with.
-        cls = this.responsiveMode() ? CLASS.WRAP_BOX_RUNTIME : CLASS.WRAP;
+        cls = this.runtimeWidgets() ? CLASS.WRAP_BOX_RUNTIME : CLASS.WRAP;
         nodeKind = 'wrap';
         orientation = 'w';
       } else if (style.flexDirection === 'column' || style.flexDirection === 'column-reverse') {
