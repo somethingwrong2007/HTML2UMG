@@ -7,7 +7,7 @@
 const path = require('path');
 const V = require('./values');
 const fontmetrics = require('./fontmetrics');
-const { baseName, NameRegistry } = require('./names');
+const { baseName, NameRegistry, ROLE_SUFFIX } = require('./names');
 
 /** UMG class names emitted by the converter. */
 const CLASS = {
@@ -34,6 +34,13 @@ const CLASS = {
   // Project widget (/Script/Html2UMGRuntime.H2URelativeBox), not engine UMG: a single-content
   // panel that turns one percentage + a min/max clamp into a real run-time size. Emitted only by
   // --layout=responsive, see Docs/Html2UMG_RelativeSize.md.
+  // Page container: children are mutually exclusive pages, i.e. a WidgetSwitcher.
+  //
+  // The name is semantic on purpose. Whether the project can use CommonUI's animated switcher is a
+  // property of the project, not of the layout, so the importer makes that choice
+  // (/Script/CommonUI.CommonAnimatedSwitcher when the plugin is enabled, /Script/UMG.WidgetSwitcher
+  // otherwise) and the JSON stays portable.
+  PAGE_SWITCHER: 'PageSwitcher',
   RELATIVE_BOX: 'H2URelativeBox',
   // Project widget (/Script/Html2UMGRuntime.H2UTextWrapBox): pushes its own allotted width into an
   // inner TextBlock's WrapTextAt, so a paragraph wraps at the width it is actually given. A plain
@@ -140,6 +147,10 @@ class Mapper {
     this.byIndex = new Map();
     for (const rec of this.snapshot.elements) this.byIndex.set(rec.i, rec);
     this.meta = new Map();
+    // node -> the element's OWN assigned name. Every role-suffixed companion is named
+    // "<own base><role>" (never a parent's composed name), so this map is what keeps a
+    // deep tree from accumulating "Item_1_Content_Content_Flow".
+    this.nodeBase = new WeakMap();
     this.samples = new Map();
     // USlider cannot paint to the ends of its own box: SSlider::OnPaint draws the track
     // from HalfHandleSize.X to AllottedWidth - HalfHandleSize.X, so a 702px slider shows a
@@ -268,7 +279,9 @@ class Mapper {
       overflowY: cs.overflowY || 'visible',
       zIndex: cs.zIndex !== undefined ? Number(cs.zIndex) || 0 : 0,
       opacity: cs.opacity !== undefined ? Number(cs.opacity) : 1,
-      visibility: cs.visibility || 'visible',
+      // An inactive switcher page was laid out with visibility:hidden purely so it could be
+      // measured; it is a real page and must be built, not skipped.
+      visibility: rec.wasHidden ? 'visible' : cs.visibility || 'visible',
       // A grid track with a px size is the cell's width: UMG sizes a column from its content, so
       // without this a 148px track collapsed to the 83px the nav needed.
       fixedWidth: rec.h2uGridTrackWidth !== undefined ? rec.h2uGridTrackWidth : declPx('width'),
@@ -383,6 +396,15 @@ class Mapper {
     if (rec.shadow) this.warn(`unsupported: shadow DOM inside '${label}' is not converted`);
   }
 
+  /**
+   * The element's OWN assigned name - also the base for every role-suffixed wrapper it
+   * owns. Never a composed parent name: that is what used to grow "Content_Content_Flow".
+   */
+  ownBase(node) {
+    if (!node) return 'Widget';
+    return this.nodeBase.get(node) || node.name || 'Widget';
+  }
+
   label(rec) {
     if (!rec) return '?';
     let out = rec.tag || '?';
@@ -460,12 +482,30 @@ class Mapper {
     const children = parent.children || [];
     if (!children.length) return;
     const pmeta = this.meta.get(parent) || {};
+    // A switcher shows one page at a time, so its slots are plain Fill: a page is never sized by the
+    // slot (WidgetSwitcherSlot has no size rule), only positioned.
+    const isSwitcher = parent.class === CLASS.PAGE_SWITCHER;
     for (let i = 0; i < children.length; i += 1) {
       const child = children[i];
       const cmeta = this.meta.get(child);
-      const slot = this.makeSlot(parent, pmeta, child, cmeta, i, children.length);
-      if (slot) child.slot = slot;
+      if (isSwitcher) {
+        child.slot = { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+      } else {
+        const slot = this.makeSlot(parent, pmeta, child, cmeta, i, children.length);
+        if (slot) child.slot = slot;
+      }
       this.assignSlots(child);
+    }
+    if (isSwitcher) {
+      // The page the browser was showing: the first child that was not display:none. The converter
+      // measured the hidden pages by temporarily laying them out, and marked them as such.
+      const activeIndex = children.findIndex((child) => {
+        const meta = this.meta.get(child);
+        const rec = meta && meta.rec;
+        return !(rec && rec.wasHidden);
+      });
+      parent.properties = parent.properties || {};
+      parent.properties.ActiveWidgetIndex = activeIndex >= 0 ? activeIndex : 0;
     }
   }
 
@@ -1539,7 +1579,8 @@ class Mapper {
 
     // Reserve names outer -> inner. The element's own name lands on the widget a
     // designer would actually bind (border, scroll box or the content widget);
-    // only the pure SizeBox wrapper is demoted to a `_Size` suffix.
+    // only the pure SizeBox wrapper is demoted to a `_Box` suffix.
+    // rootName is the element's OWN base: children never derive their name from it.
     const rootName = this.names.unique(ctx.forceName || baseName(rec));
     const plan = [];
     if (wantsSize) plan.push('size');
@@ -1547,18 +1588,20 @@ class Mapper {
     if (wantsScroll) plan.push('scroll');
     plan.push('content');
     const primaryKey = LEAF_KINDS.has(kind) ? 'content' : wantsBorder ? 'border' : wantsScroll ? 'scroll' : 'content';
+    // One short role suffix per wrapper, all of them from names.js so the vocabulary is
+    // identical across every design. "${rootName}<suffix>", never "<parent name><suffix>".
     const suffixFor = (key) => {
-      if (key === 'size') return '_Size';
-      if (key === 'border') return style.hasVisualBox ? '_BG' : '_Pad';
-      if (key === 'scroll') return '_Scroll';
-      return '_Content';
+      if (key === 'size') return ROLE_SUFFIX.size;
+      if (key === 'border') return style.hasVisualBox ? ROLE_SUFFIX.bg : ROLE_SUFFIX.pad;
+      if (key === 'scroll') return ROLE_SUFFIX.scroll;
+      return ROLE_SUFFIX.content;
     };
     const nodeName = {};
     for (const key of plan) {
       nodeName[key] = key === primaryKey ? rootName : this.names.unique(`${rootName}${suffixFor(key)}`);
     }
 
-    let node = this.buildContent(rec, style, kind, ctx, nodeName.content);
+    let node = this.buildContent(rec, style, kind, ctx, nodeName.content, rootName);
     // A decoration with no content is legitimate (Border/SizeBox with no children),
     // but an empty SizeBox alone is noise: bail out when nothing else is wanted.
     if (!node && !wantsBorder) return null;
@@ -1628,7 +1671,7 @@ class Mapper {
     // blur covers the designed box and the tinted panel is drawn on top of it.
     const blurStrength = this.blurStrength(style.backdropFilter);
     if (blurStrength > 0) {
-      const blur = this.makeNode(this.names.unique(`${rootName}_Blur`), CLASS.BACKGROUND_BLUR, rec, true);
+      const blur = this.makeNode(this.names.unique(`${rootName}${ROLE_SUFFIX.blur}`), CLASS.BACKGROUND_BLUR, rec, true);
       blur.properties = { BlurStrength: blurStrength };
       if (node) blur.children = [node];
       this.meta.set(blur, { rec, style, kind: 'blur' });
@@ -1676,7 +1719,7 @@ class Mapper {
     // *desired* size only and hands its child the allotted geometry untouched (SBox.cpp:146-158
     // vs :187+), so `min-width`/`max-width` inside a Fill slot is silently ignored at run time.
     if (relPlan && node) {
-      const box = this.makeNode(this.names.unique(`${rootName}_Rel`), CLASS.RELATIVE_BOX, rec, true);
+      const box = this.makeNode(this.names.unique(`${rootName}${ROLE_SUFFIX.rel}`), CLASS.RELATIVE_BOX, rec, true);
       box.properties = this.relativeBoxProperties(relPlan, rec);
       // The provisional px pin crossAxisPercentPx() emitted for a declarative `width:92%` is dead
       // weight now: the box owns that axis, and a WidthOverride under a Fill slot is ignored by
@@ -1699,6 +1742,9 @@ class Mapper {
     }
 
     if (!node) return null;
+    // Remember whose element this node belongs to: role-suffixed wrappers are named from
+    // this base, so a nested container never leaks its own composed name downwards.
+    this.nodeBase.set(node, rootName);
     if (style.opacity < 0.999) {
       node.properties = node.properties || {};
       node.properties.RenderOpacity = V.round(style.opacity, 3);
@@ -1972,10 +2018,13 @@ class Mapper {
       left = V.clamp(measuredLeft, 0, free);
     }
     const right = Math.max(0, free - left);
-    const wrapName = this.names.unique(`${child.name}_PctWrap`);
+    // The row and its spacers belong to the CHILD element: name them from its own base
+    // ("Item1_Row" with "Item1_L" / "Item1_R"), not from the child's composed node name.
+    const childBase = this.ownBase(child);
+    const wrapName = this.names.unique(`${childBase}${ROLE_SUFFIX.row}`);
     const spacer = (weight, side) => {
       if (!(weight > 0.0005)) return null;
-      const node = this.makeNode(this.names.unique(`${wrapName}_${side}`), CLASS.SIZE_BOX, undefined);
+      const node = this.makeNode(this.names.unique(`${childBase}${side}`), CLASS.SIZE_BOX, undefined);
       node.children = [];
       // No brush and no child: the spacer is pure weight. The weight ALSO lives on the meta
       // because boxSlot() recomputes this slot in assignSlots(), which used to overwrite the Fill
@@ -1989,7 +2038,7 @@ class Mapper {
     // element as its `source` would make a geometry audit compare two different rects (same
     // reason the flow group drops it).
     delete row.source;
-    row.children = [spacer(left, 'L'), child, spacer(right, 'R')].filter(Boolean);
+    row.children = [spacer(left, ROLE_SUFFIX.left), child, spacer(right, ROLE_SUFFIX.right)].filter(Boolean);
     child.slot = { Size: { SizeRule: 'Fill', Value: V.round(pct, 4) }, HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
     // The provisional px pin crossAxisPercentPx() emitted is dead weight now: the Fill weight is
     // what sizes the child, and a frozen WidthOverride inside a Fill slot is ignored by Slate
@@ -2071,9 +2120,10 @@ class Mapper {
     this.meta.set(node, { rec, style, kind: 'widget-instance' });
 
     // A declared CSS box still sizes the instance like any other element.
+    this.nodeBase.set(node, name);
     if (style && (style.fixedWidth !== null || style.fixedHeight !== null)) {
       const box = {
-        name: this.names.unique(`${name}_Size`),
+        name: this.names.unique(`${name}${ROLE_SUFFIX.size}`),
         class: CLASS.SIZE_BOX,
         source: this.label(rec),
         variable: false,
@@ -2081,6 +2131,7 @@ class Mapper {
         children: [node],
       };
       this.meta.set(box, { rec, style, kind: 'sizebox' });
+      this.nodeBase.set(box, name);
       return box;
     }
     return node;
@@ -2300,7 +2351,7 @@ class Mapper {
     return null;
   }
 
-  buildText(rec, style, ctx, name) {
+  buildText(rec, style, ctx, name, base) {
     const merged = this.mergedText(rec);
     if (merged.styles.size > 1) {
       this.warn(`approximated: inline styling inside '${this.label(rec)}' collapsed into one TextBlock`);
@@ -2402,7 +2453,7 @@ class Mapper {
     // WrapTextAt each arrange. Only paragraphs the browser actually wrapped (>= 2 lines) get the
     // wrapper: a single-line label has no reflow to gain and the extra panel would be dead weight.
     if (autoWrap && browserLines >= 2 && this.runtimeWidgets() && this.textWrapBoxMode()) {
-      return this.wrapTextForFlow(node, rec, style);
+      return this.wrapTextForFlow(node, rec, style, base || name);
     }
     return node;
   }
@@ -2419,8 +2470,10 @@ class Mapper {
    * No WrapTextAt is emitted on the inner block (it would freeze the design width); the control
    * writes the live allotted width there instead.
    */
-  wrapTextForFlow(node, rec, style) {
-    const box = this.makeNode(this.names.unique(`${node.name}_Wrap`), CLASS.TEXT_WRAP_BOX, rec, true);
+  wrapTextForFlow(node, rec, style, base) {
+    // `base` is the owning element's own name, so the box is "Para_Wrap" rather than
+    // "Para_Inner_Wrap".
+    const box = this.makeNode(this.names.unique(`${base || this.ownBase(node)}${ROLE_SUFFIX.wrap}`), CLASS.TEXT_WRAP_BOX, rec, true);
     box.properties = {
       DesignWrapWidth: this.contentBoxWidth(rec, style),
       bAutoWrap: true,
@@ -3013,12 +3066,17 @@ class Mapper {
   }
 
   // ----------------------------------------------------------------- content
-  buildContent(rec, style, kind, ctx, name) {
+  /**
+   * `name` is the name of the widget this element's content becomes; `base` is the
+   * element's OWN assigned name, used for companions generated *inside* the content
+   * (a text-wrap box, a control's caption) so they never chain onto `name`.
+   */
+  buildContent(rec, style, kind, ctx, name, base) {
     switch (kind) {
       case 'placeholder':
         return this.buildPlaceholder(rec, style, name);
       case 'text':
-        return this.buildText(rec, style, ctx, name);
+        return this.buildText(rec, style, ctx, name, base);
       case 'image':
         return this.buildImage(rec, style, name);
       case 'button':
@@ -3036,7 +3094,7 @@ class Mapper {
       case 'range':
         return this.buildSlider(rec, style, name);
       default:
-        return this.buildContainer(rec, style, kind, ctx, name);
+        return this.buildContainer(rec, style, kind, ctx, name, base || name);
     }
   }
 
@@ -3473,7 +3531,7 @@ class Mapper {
     if (Object.keys(buttonStyle).length) props.WidgetStyle = buttonStyle;
 
     if (this.mergedText(rec).text.length) {
-      const textNode = this.buildText(rec, style, ctx, this.names.unique(`${name}_Label`));
+      const textNode = this.buildText(rec, style, ctx, this.names.unique(`${name}${ROLE_SUFFIX.text}`), name);
       if (textNode) node.children = [textNode];
     }
     node.properties = props;
@@ -3888,7 +3946,11 @@ class Mapper {
     return items;
   }
 
-  buildContainer(rec, style, kind, ctx, name) {
+  /**
+   * `name` is this container widget's name; `base` is the owning element's own name.
+   * Everything generated below (flow group, bare text runs) is named from `base`.
+   */
+  buildContainer(rec, style, kind, ctx, name, base) {
     const items = this.childItems(rec);
     // Text runs inherit their owner's typography: remember it on the item.
     for (const item of items) {
@@ -3908,7 +3970,7 @@ class Mapper {
     const forceClass = (rec.ue || {}).class;
     if (forceClass) {
       const node = this.makeNode(name, forceClass, rec);
-      node.children = this.mapChildren(flow.concat(absolute), ctx, null, name);
+      node.children = this.mapChildren(flow.concat(absolute), ctx, null, name, base);
       this.meta.set(node, { rec, style, kind: 'custom' });
       return node;
     }
@@ -3917,7 +3979,7 @@ class Mapper {
       // Flow children keep their flow container, absolutely positioned ones are
       // placed on a CanvasPanel sibling layer (CSS stacking inside one box).
       const canvas = this.makeNode(name, CLASS.CANVAS, rec);
-      const flowNode = this.buildFlowContainer(rec, style, kind, flow, ctx, this.names.unique(`${name}_Flow`));
+      const flowNode = this.buildFlowContainer(rec, style, kind, flow, ctx, this.names.unique(`${base}${ROLE_SUFFIX.flow}`), base);
       const canvasChildren = [];
       if (flowNode) {
         const fmeta = this.meta.get(flowNode);
@@ -3928,7 +3990,7 @@ class Mapper {
         delete flowNode.source;
         canvasChildren.push(flowNode);
       }
-      canvasChildren.push.apply(canvasChildren, this.mapChildren(absolute, ctx, 'canvas', name));
+      canvasChildren.push.apply(canvasChildren, this.mapChildren(absolute, ctx, 'canvas', name, base));
       if (!canvasChildren.length) return null;
       canvas.children = canvasChildren;
       this.meta.set(canvas, { rec, style, kind: 'canvas', canvasInset: this.canvasInsetOf(style) });
@@ -3937,13 +3999,13 @@ class Mapper {
 
     if (absolute.length) {
       const canvas = this.makeNode(name, CLASS.CANVAS, rec);
-      canvas.children = this.mapChildren(absolute, ctx, 'canvas', name);
+      canvas.children = this.mapChildren(absolute, ctx, 'canvas', name, base);
       if (!canvas.children.length) return null;
       this.meta.set(canvas, { rec, style, kind: 'canvas', canvasInset: this.canvasInsetOf(style) });
       return canvas;
     }
 
-    return this.buildFlowContainer(rec, style, kind, flow, ctx, name);
+    return this.buildFlowContainer(rec, style, kind, flow, ctx, name, base);
   }
 
   /**
@@ -3982,12 +4044,21 @@ class Mapper {
     return { x: shift(series.x, border[0], border[2]), y: shift(series.y, border[1], border[3]) };
   }
 
-  buildFlowContainer(rec, style, kind, items, ctx, name) {
+  buildFlowContainer(rec, style, kind, items, ctx, name, base) {
     let cls = CLASS.VERTICAL;
     let nodeKind = 'block';
     let orientation = 'v';
 
-    if (kind === 'grid') {
+    // data-ue-switcher: this container's children are mutually exclusive pages. The importer maps
+    // it to CommonUI's animated switcher when available and to a stock WidgetSwitcher otherwise.
+    if (rec.ue && rec.ue.switcher !== undefined) {
+      cls = CLASS.PAGE_SWITCHER;
+      nodeKind = 'switcher';
+      orientation = 'switcher';
+      this.infoOnce(
+        `mapped: 'switcher' at '${this.label(rec)}' becomes a page switcher (${(rec.k || []).length} page(s))`
+      );
+    } else if (kind === 'grid') {
       const tracks = style.gridColumns || [];
       const first = tracks.length ? tracks[0].px : undefined;
       const uniform =
@@ -4081,7 +4152,7 @@ class Mapper {
       }
     }
 
-    const children = this.mapChildren(items, ctx, orientation, name);
+    const children = this.mapChildren(items, ctx, orientation, name, base);
     // An empty container is noise in the Designer: only keep it if it carries
     // children. (Decorations still survive through their Border/SizeBox wrapper.)
     if (!children.length) return null;
@@ -4212,7 +4283,7 @@ class Mapper {
     return Object.keys(props).length ? props : null;
   }
 
-  mapChildren(items, ctx, orientation, ownerName) {
+  mapChildren(items, ctx, orientation, ownerName, ownerBase) {
     // Only <body> is the root; descendants always inherit a parent container and
     // must never inherit the root's name hint.
     const childCtx = Object.assign({}, ctx, { isRoot: false, forceName: null, orientation: orientation || null });
@@ -4225,8 +4296,11 @@ class Mapper {
         const text = String(item.text || '').trim();
         if (!text) continue;
         textIndex += 1;
-        const suffix = textIndex === 1 ? '_Text' : `_Text${textIndex}`;
-        const generated = this.names.unique(`${ownerName || 'Text'}${suffix}`);
+        // A bare text run belongs to the container element, so it is named from that
+        // element's OWN base ("Item_1_Text"), not from the container widget's composed
+        // name ("Item_1_Inner_Text").
+        const suffix = textIndex === 1 ? ROLE_SUFFIX.text : `${ROLE_SUFFIX.text}${textIndex}`;
+        const generated = this.names.unique(`${ownerBase || ownerName || 'Text'}${suffix}`);
         const textNode = this.buildRunText(item.parentRec || null, item.parentStyle || null, ctx, text, generated);
         // Inline flow relied on a literal space to separate this run from the
         // widget before it; carry it over as a small leading padding.

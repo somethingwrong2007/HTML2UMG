@@ -27,6 +27,9 @@ const KNOWN_CLASSES = new Set([
   'EditableTextBox', 'ComboBoxString', 'ProgressBar', 'CheckBox', 'Slider', 'Spacer',
   'RichTextBlock', 'NamedSlot', 'RetainerBox', 'SafeZone', 'ExpandableArea', 'ListView',
   'StackBox', 'WidgetSwitcher', 'Throbber', 'CircularThrottle',
+  // Semantic container: the importer resolves it to CommonUI's animated switcher when the project
+  // has CommonUI enabled, and to a stock WidgetSwitcher otherwise.
+  'PageSwitcher',
   // Added for the effects round: backdrop-filter maps onto UMG's BackgroundBlur.
   'BackgroundBlur',
   // Project widget (/Script/Html2UMGRuntime.H2URelativeBox): a single-content panel that turns
@@ -47,6 +50,7 @@ const SLOT_KEYS = {
   VerticalBox: ['Padding', 'Size', 'HorizontalAlignment', 'VerticalAlignment'],
   HorizontalBox: ['Padding', 'Size', 'HorizontalAlignment', 'VerticalAlignment'],
   WrapBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment', 'FillSpanWhenLessThan', 'bFillEmptySpace', 'bForceNewLine'],
+  PageSwitcher: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   CanvasPanel: ['LayoutData', 'bAutoSize', 'ZOrder'],
   GridPanel: ['Padding', 'Row', 'RowSpan', 'Column', 'ColumnSpan', 'Layer', 'HorizontalAlignment', 'VerticalAlignment'],
   UniformGridPanel: ['Row', 'Column', 'HorizontalAlignment', 'VerticalAlignment'],

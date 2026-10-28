@@ -155,6 +155,66 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 
 单视口分不清"左对齐"和"居中"，用 `--probe` 多给几个视口会明显更准。
 
+## 页面切换：WidgetSwitcher，优先用 CommonUI 版本
+
+标签页/多页界面在 HTML 里通常是"同一个位置放几张页面，只有一张可见"。给容器加
+`data-ue-switcher`，它的**子元素就是页面**：
+
+```html
+<div class="viewer" data-ue-switcher data-ue-name="Viewer">
+  <div class="on" data-ue-name="ViewerA">视图 A</div>
+  <div data-ue-name="ViewerB">视图 B</div>
+  <div data-ue-name="ViewerC">视图 C</div>
+</div>
+```
+
+- 隐藏的页面（`display:none`）**也会被测量**：截快照时把它们临时按内边距盒摊开、量完立刻还原，
+  所以它们在 UMG 里是完整的、有真实布局的页面，而不是空壳；
+- `ActiveWidgetIndex` 取浏览器当时**可见**的那一页的下标；
+- 输出的类名是语义化的 `PageSwitcher`，**由导入器决定用哪个引擎类**——JSON 因此不绑定具体项目：
+
+| 项目情况 | 解析成 |
+|---|---|
+| 启用了 CommonUI 插件（`CommonUIConfig` / `CommonUI`） | `/Script/CommonUI.CommonAnimatedSwitcher`（自带页面切换过渡） |
+| 没启用 | `/Script/UMG.WidgetSwitcher`（回退） |
+
+导入日志会打一行说明用了哪个（`PageSwitcher: CommonUI is not enabled, using the stock WidgetSwitcher...`）。
+两个类都是 `UWidgetSwitcher` 家族，槽位语义一致（`bExplicitWrapSize` 那类差异不存在），所以
+布局不用为"有没有 CommonUI"分叉。
+
+## 动画：不转换，但会明确告诉你丢了什么
+
+CSS 的 `transition` / `@keyframes` 不在转换范围内。原因不是懒：UMG 的运动是
+`UWidgetAnimation`（一个 Sequencer 资产）+ 蓝图图表驱动的，而 CSS 里真正有意思的部分是
+hover/focus/press 这类**事件驱动的状态过渡**——静态转换器没有地方放那张图。真要生成，只能覆盖
+"入场/循环关键帧"这一小撮，还得给每个控件建 track 与绑定，收益远小于复杂度。
+
+所以做法是**如实报告**：转换时会打一条
+
+```
+approximated: CSS motion is not converted - 2 rule(s) with transition (.tab, .btn); @keyframes spin. ...
+```
+
+读的是**作者写的规则**而不是计算后的样式——快照前有一张 `* { transition: none !important }` 的
+稳定化样式表（否则截图不确定），计算值里永远看不到它们。
+
+页面切换的过渡是个免费的例外：CommonUI 的 `CommonAnimatedSwitcher` 自带切页动画。
+
+## 自动命名
+
+优先级：`data-ue-name` > `#id` > `class` > `tag`，转成 PascalCase、全局唯一、保证合法。
+
+一个元素可能会被拆成几个控件（`SizeBox` 定尺寸、`Border` 画背景、容器放内容），**主节点拿干净的名字**
+（`SettingsPanel`），其余按角色加**短后缀**：`_Box`（尺寸盒）、`_Inner`（内容容器）、`_BG`（背景）、
+`_Blur`、`_Row`、`_Wrap`。后缀只有一个词，而且**从元素自己的名字派生**，不会层层叠加：
+
+```
+好：SettingsPanel / SettingsPanel_Box / SettingsPanel_Inner
+坏：SettingsPanel_Size_PctWrap_Content_Text   （旧版本会这样）
+```
+
+需要绑定的控件建议直接写 `data-ue-name`：那是 `BindWidget` 的匹配键，改名等于改契约。
+
 ## 响应式：一份 WBP 适配多种尺寸
 
 UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器也分成两种模式：
@@ -463,6 +523,9 @@ UnrealEditor.exe <工程>.uproject ^
 | 某个 `BindWidget` 为空 | 给对应元素加 `data-ue-name`，名字接近时消息里会提示疑似拼写 |
 | 导入失败但资产已存 | 资产是半成品，改完重新导入即可 |
 | 重导后贴图没变 | 贴图按内容寻址，源文件变了名字就会变；如果没变说明没重新烘焙 |
+| 切页只在第一页 | 容器没加 `data-ue-switcher`；或项目没启用 CommonUI 却期望切页动画（日志会说明回退到 `WidgetSwitcher`） |
+| 隐藏页在 UMG 里是空的 | 该页不是 `data-ue-switcher` 的子元素，转换器没有理由去测量它 |
+| 转出来的名字还是太长 | 那是旧版本产物；`data-ue-name` 会原样成为控件名，其余自动名只带一个角色后缀 |
 
 ## 目录结构
 

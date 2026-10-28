@@ -412,6 +412,22 @@ async function main(argv) {
     const root = mapper.map();
     for (const warning of mapper.warnings) warnings.push(warning);
 
+    // CSS motion has no UMG equivalent the importer can synthesise: a UWidgetAnimation is a
+    // sequencer asset, and the interesting cases (hover / focus / press) are event driven and would
+    // need a generated blueprint graph, which a static converter cannot express. The snapshot reads
+    // the authored rules because the stabilize stylesheet forces transition/animation to none.
+    const motion = snapshot.motion || { transitions: [], animations: [], keyframes: [] };
+    const motionRules = motion.transitions.length + motion.animations.length;
+    if (motionRules > 0 || motion.keyframes.length > 0) {
+      const bits = [];
+      if (motion.transitions.length) bits.push(`${motion.transitions.length} rule(s) with transition (${motion.transitions.slice(0, 3).join(', ')})`);
+      if (motion.animations.length) bits.push(`${motion.animations.length} rule(s) with animation (${motion.animations.slice(0, 3).join(', ')})`);
+      if (motion.keyframes.length) bits.push(`@keyframes ${motion.keyframes.slice(0, 3).join(', ')}`);
+      warnings.push(
+        `approximated: CSS motion is not converted - ${bits.join('; ')}. The widgets are imported in their resting state; build the motion in the UMG designer (Widget Animation) or with CommonUI styles`
+      );
+    }
+
     const bodyRec = snapshot.elements.find((rec) => rec.tag === 'body');
     const ueBlueprint = bodyRec && bodyRec.ue && bodyRec.ue.blueprint ? String(bodyRec.ue.blueprint) : null;
     const blueprint = opts.blueprint || (ueBlueprint ? ueBlueprint.replace(/\\/g, '/') : defaultBlueprintName(opts.input));

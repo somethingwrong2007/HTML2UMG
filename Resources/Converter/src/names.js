@@ -6,6 +6,38 @@
 const LEGAL_RE = /[^A-Za-z0-9_]/g;
 
 /**
+ * Role suffixes: the ONLY table that decides what an element's synthetic companion
+ * widget is called. The contract is <element's own base name> + <role suffix>:
+ * a companion must never be named from a parent's composed name, or a deep tree
+ * grows "Item_1_Content_Content_Flow" style chains that are unreadable in the UMG
+ * Designer and in BindWidget properties.
+ *
+ * Keep the list SHORT (that is the point) and identical for every design:
+ *   size -> _Box, content -> _Inner, blur -> _Blur, wrap -> _Wrap, row -> _Row,
+ *   spacer -> _L / _R.
+ * The role must still be obvious at a glance: "NavItem1_Box" yes, "N1B" no.
+ *
+ * The C++ side (Html2UMG::SanitizeWidgetName / MakeUniqueNames) does not know these
+ * roles: it only guarantees legality and uniqueness, so nothing has to be mirrored
+ * there beyond those two rules.
+ */
+const ROLE_SUFFIX = Object.freeze({
+  size: '_Box',      // SizeBox wrapper that carries fixed / min / max sizes
+  content: '_Inner', // inner content node, when the element's name sits on its Border / ScrollBox
+  bg: '_BG',         // Border wrapper that paints the element's background / outline
+  pad: '_Pad',       // Border wrapper that only carries CSS padding
+  scroll: '_Scroll', // ScrollBox wrapper for overflow:auto | scroll
+  blur: '_Blur',     // BackgroundBlur wrapper for backdrop-filter: blur()
+  rel: '_Rel',       // H2URelativeBox wrapper (--layout=responsive only)
+  flow: '_Flow',     // flow child of the CanvasPanel that also hosts absolute children
+  wrap: '_Wrap',     // H2UTextWrapBox wrapper around a wrapping TextBlock
+  row: '_Row',       // spacer row that expresses a cross-axis percentage
+  left: '_L',        // spacer before the child inside that row
+  right: '_R',       // spacer after the child inside that row
+  text: '_Text',     // generated TextBlock (bare text run / a control's caption)
+});
+
+/**
  * Turn arbitrary text into a legal UMG widget identifier.
  * "hud-top-left" -> "HudTopLeft", "3d_marker" -> "W3dMarker", "" -> "Widget".
  * Mirrors Html2UMG::SanitizeWidgetName's guarantees (legal, non-empty, no
@@ -113,8 +145,8 @@ class NameRegistry {
 
   /**
    * Reserve the element's base name and, at the same time, a consistent set of
-   * synthetic wrapper names derived from it (so "Card" yields Card_Size/Card_BG
-   * /Card_Content without colliding with another element literally named Card_BG).
+   * synthetic wrapper names derived from it (so "Card" yields Card_Box/Card_BG
+   * /Card_Inner without colliding with another element literally named Card_BG).
    */
   family(base, suffixes) {
     const root = this.unique(base);
@@ -143,4 +175,4 @@ function defaultBlueprintName(inputPath) {
   return `/Game/UI/WBP_${id}`;
 }
 
-module.exports = { toIdentifier, sanitize, baseName, NameRegistry, defaultBlueprintName, isStateClass };
+module.exports = { toIdentifier, sanitize, baseName, NameRegistry, defaultBlueprintName, isStateClass, ROLE_SUFFIX };

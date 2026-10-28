@@ -780,6 +780,66 @@ function pageSnapshot(opts) {
     return ctl;
   };
 
+  // -------------------------------------------------- switcher pages (display:none)
+  //
+  // A tabbed page hides its inactive pages with display:none, so a plain walk never sees them and
+  // the importer has nothing to build the other WidgetSwitcher children from. Only containers the
+  // author marked with data-ue-switcher are touched: their hidden children are laid out for
+  // measurement (position:absolute + visibility:hidden, so they do not disturb the visible page),
+  // then everything is restored exactly as it was.
+  var revealedSwitchers = [];
+  var revealSwitcherPages = function () {
+    var switchers = document.querySelectorAll('[data-ue-switcher]');
+    for (var s = 0; s < switchers.length; s += 1) {
+      var container = switchers[s];
+      var kids = container.children || [];
+      var hidden = [];
+      for (var c = 0; c < kids.length; c += 1) {
+        var kid = kids[c];
+        if (window.getComputedStyle(kid).display !== 'none') continue;
+        const before = window.getComputedStyle(kid);
+        hidden.push({
+          el: kid,
+          cssText: kid.style.cssText,
+          wasHidden: true
+        });
+        kid.__h2uOrig = {
+          display: before.display,
+          position: before.position,
+          visibility: before.visibility
+        };
+        kid.style.display = 'block';
+        // Both left and right pinned: an absolutely positioned box with auto width would
+        // shrink-to-fit (measured 131px instead of the 520px page width).
+        kid.style.position = 'absolute';
+        kid.style.left = '0px';
+        kid.style.right = '0px';
+        kid.style.top = '0px';
+        kid.style.visibility = 'hidden';
+        kid.style.pointerEvents = 'none';
+        kid.__h2uWasHidden = true;
+        // Force a synchronous layout so the next getBoundingClientRect is real.
+        void kid.getBoundingClientRect();
+      }
+      if (hidden.length > 0) {
+        revealedSwitchers.push({ hidden: hidden });
+      }
+    }
+  };
+
+  var restoreSwitcherPages = function () {
+    for (var s = 0; s < revealedSwitchers.length; s += 1) {
+      var hidden = revealedSwitchers[s].hidden;
+      for (var c = 0; c < hidden.length; c += 1) {
+        hidden[c].el.style.cssText = hidden[c].cssText;
+        hidden[c].el.__h2uWasHidden = false;
+      }
+    }
+    revealedSwitchers = [];
+  };
+
+  revealSwitcherPages();
+
   // -------------------------------------------------------------- DOM traversal
   var elements = [];
   var skippedHidden = 0;
@@ -895,6 +955,15 @@ function pageSnapshot(opts) {
       rec.cs[prop] = value;
     }
 
+    // A revealed switcher page was forced into position:absolute / block / hidden just so it could
+    // be measured. Report the styles the author actually wrote, otherwise the converter treats the
+    // page as an absolutely positioned child of a canvas instead of a plain block page.
+    if (el.__h2uWasHidden && el.__h2uOrig) {
+      rec.cs.display = el.__h2uOrig.display === 'none' ? 'block' : el.__h2uOrig.display || 'block';
+      rec.cs.position = el.__h2uOrig.position || 'static';
+      rec.cs.visibility = el.__h2uOrig.visibility || 'visible';
+    }
+
     if (captureDeclared) rec.decl = declaredFor(el);
 
     // data-ue-* control attributes must be known before the control capture.
@@ -945,6 +1014,8 @@ function pageSnapshot(opts) {
       }
       if (ue) rec.ue = ue;
     }
+    // Inactive switcher pages were laid out only for measurement (see revealSwitcherPages).
+    if (el.__h2uWasHidden) rec.wasHidden = true;
 
     // Classify children before descending (needed for the text-merge decision).
     var childElements = [];
@@ -1038,6 +1109,46 @@ function pageSnapshot(opts) {
     /* ignore */
   }
 
+  // Every switcher page has been measured; put the DOM back the way the author wrote it so the
+  // bake pass and the reference screenshot see the real page.
+  restoreSwitcherPages();
+
+  // CSS motion. The stabilize stylesheet sets transition/animation to none on everything so a
+  // snapshot is deterministic, which means computed styles can never report it - read the authored
+  // rules instead. UMG has no equivalent the importer can synthesise, so this only drives a warning.
+  var collectMotion = function () {
+    var out = { transitions: [], animations: [], keyframes: [] };
+    var sheets = document.styleSheets || [];
+    for (var i = 0; i < sheets.length; i += 1) {
+      var sheet = sheets[i];
+      if (sheet.ownerNode && sheet.ownerNode.id === '__html2umg_stabilize__') continue;
+      var rules;
+      try {
+        rules = sheet.cssRules;
+      } catch (err) {
+        continue; // cross-origin sheet: not readable, not our problem
+      }
+      if (!rules) continue;
+      for (var r = 0; r < rules.length; r += 1) {
+        var rule = rules[r];
+        if (rule.type === 7 && rule.name) {
+          out.keyframes.push(String(rule.name));
+          continue;
+        }
+        var decl = rule.style;
+        if (!decl) continue;
+        var selector = rule.selectorText || '';
+        if (decl.transition && decl.transition !== 'none' && out.transitions.length < 40) {
+          out.transitions.push(selector);
+        }
+        if ((decl.animation && decl.animation !== 'none') || (decl.animationName && decl.animationName !== 'none')) {
+          if (out.animations.length < 40) out.animations.push(selector);
+        }
+      }
+    }
+    return out;
+  };
+
   return {
     viewport: { width: window.innerWidth, height: window.innerHeight },
     designViewport: { width: opts.width, height: opts.height },
@@ -1052,6 +1163,7 @@ function pageSnapshot(opts) {
     ruleCount: ruleIndex.length,
     inaccessibleSheets: inaccessibleSheets,
     skippedHidden: skippedHidden,
+    motion: collectMotion(),
     truncated: truncated,
     bodyStyle: (function () {
       if (!document.body) return null;

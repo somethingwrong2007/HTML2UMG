@@ -20,6 +20,7 @@
 #include "Html2UMGLog.h"
 #include "Layout/Margin.h"
 #include "Misc/PackageName.h"
+#include "Interfaces/IPluginManager.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateTypes.h"
 #include "UObject/Class.h"
@@ -265,6 +266,51 @@ UClass* FHtml2UMGWidgetBuilder::ResolveWidgetClass(const FString& ClassName, FSt
 
 		OutError = FString::Printf(TEXT("class '%s' could not be loaded."), *Trimmed);
 		return nullptr;
+	}
+
+	// 1b. "PageSwitcher": a container whose engine class depends on what the project has enabled.
+	//
+	//     The layout cannot know that, so the converter emits the semantic name and the choice is
+	//     made here. CommonUI's UCommonAnimatedSwitcher derives from UWidgetSwitcher and adds the
+	//     page transition, so it is preferred whenever the plugin is enabled; a plain
+	//     UWidgetSwitcher is the fallback, and the layout itself is identical either way.
+	if (Trimmed.Equals(TEXT("PageSwitcher"), ESearchCase::IgnoreCase))
+	{
+		const TSharedPtr<IPlugin> CommonUIPlugin = IPluginManager::Get().FindPlugin(TEXT("CommonUI"));
+		const bool bCommonUIEnabled = CommonUIPlugin.IsValid() && CommonUIPlugin->IsEnabled();
+
+		if (bCommonUIEnabled)
+		{
+			static const TCHAR* CommonCandidates[] = {
+				TEXT("/Script/CommonUI.CommonAnimatedSwitcher"),
+				// Older/newer CommonUI builds may only ship the activatable variant.
+				TEXT("/Script/CommonUI.CommonActivatableWidgetSwitcher")
+			};
+			for (const TCHAR* Candidate : CommonCandidates)
+			{
+				if (UClass* Found = FindObject<UClass>(nullptr, Candidate))
+				{
+					return Found;
+				}
+				if (UClass* Loaded = LoadObject<UClass>(nullptr, Candidate))
+				{
+					return Loaded;
+				}
+			}
+		}
+
+		UE_LOG(LogHtml2UMG, Display,
+			TEXT("PageSwitcher: CommonUI %s, using the stock WidgetSwitcher for this page container."),
+			bCommonUIEnabled ? TEXT("is enabled but exposed no switcher class") : TEXT("is not enabled"));
+
+		if (UClass* Stock = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetSwitcher")))
+		{
+			return Stock;
+		}
+		if (UClass* Stock = LoadObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetSwitcher")))
+		{
+			return Stock;
+		}
 	}
 
 	// 2. Short native name -> /Script/UMG.Name, then /Script/Html2UMGRuntime.Name (H2URelativeBox),

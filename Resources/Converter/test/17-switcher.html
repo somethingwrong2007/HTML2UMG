@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>17 — 页面切换（WidgetSwitcher）</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 1920px; height: 1080px; }
+  body {
+    background: #0b1016; color: #dbe7f3;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    height: 64px; display: flex; align-items: center; gap: 12px;
+    padding: 0 24px; background: #111a23; border-bottom: 1px solid #1e2a36;
+    flex: 0 0 64px;
+  }
+  .tab {
+    height: 36px; padding: 0 20px; display: flex; align-items: center;
+    border-radius: 8px; background: #17222e; color: #9fb4c8; font-size: 14px;
+  }
+  .tab { transition: background-color .18s ease; }
+  .tab.active { background: #1d5f72; color: #eaf6fb; }
+  /* 隐式切换：三张"页面"叠在同一个位置，只有一张 display:block，其余 display:none */
+  .stage { position: relative; flex: 1 1 auto; }
+  .page { display: none; padding: 32px; }
+  .page.visible { display: block; }
+  .page h2 { margin: 0 0 16px 0; font-size: 26px; }
+  .page p { margin: 0; font-size: 15px; line-height: 26px; color: #b9cbdb; width: 880px; }
+  .card { margin-top: 20px; padding: 18px; background: #131c26; border: 1px solid #22303f; border-radius: 10px; }
+  /* 显式切换：data-ue-switcher，子项就是页面 */
+  .viewer { position: absolute; right: 24px; top: 24px; width: 520px; height: 320px;
+            background: #101a24; border: 1px solid #22303f; border-radius: 10px; }
+  .viewer > div { padding: 18px; display: none; }
+  .viewer > div.on { display: block; }
+  .hint { position: absolute; left: 24px; bottom: 24px; font-size: 13px; color: #6f8ba3; }
+</style>
+</head>
+<body>
+  <div class="bar" data-ue-name="TabBar">
+    <div class="tab active" data-ue-name="TabHome">概览</div>
+    <div class="tab" data-ue-name="TabLink">链路</div>
+    <div class="tab" data-ue-name="TabMap">地图</div>
+  </div>
+
+  <div class="stage">
+    <!-- 隐式：浏览器只显示 .visible 那一张 -->
+    <div class="page visible" data-ue-name="PageHome">
+      <h2>概览</h2>
+      <p>这一段属于"概览"页。浏览器里另外两页是 display:none，转换器应该把这三张兄弟页识别成一个
+         WidgetSwitcher，并把可见的那张设成当前页。</p>
+      <div class="card" data-ue-name="HomeCard">链路正常，延迟 42ms。</div>
+    </div>
+    <div class="page" data-ue-name="PageLink">
+      <h2>链路</h2>
+      <p>第二页同样有一段中文说明，用来确认隐藏页也被完整转换、只是不在当前索引上。</p>
+    </div>
+    <div class="page" data-ue-name="PageMap">
+      <h2>地图</h2>
+      <p>第三页。</p>
+    </div>
+
+    <!-- 显式：data-ue-switcher 包住的三张页面，当前是第一张 -->
+    <div class="viewer" data-ue-switcher data-ue-name="Viewer" data-ue-active="0">
+      <div class="on" data-ue-name="ViewerA">视图 A：姿态</div>
+      <div data-ue-name="ViewerB">视图 B：航点</div>
+      <div data-ue-name="ViewerC">视图 C：告警</div>
+    </div>
+
+    <div class="hint" data-ue-name="Hint">隐式切换靠 display:none 推断；显式切换靠 data-ue-switcher。</div>
+  </div>
+</body>
+</html>
