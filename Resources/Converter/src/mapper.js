@@ -1237,8 +1237,23 @@ class Mapper {
       };
     }
 
-    // 1. Opposing insets with an auto size: stretch between them.
-    if (near && far && !hasDeclaredSize) {
+    // 1. Opposing insets with an auto size: stretch between them - but only when the measurement
+    //    confirms the element really fills that span.
+    //
+    //    A replaced element can beat left/right with its own intrinsic width: a <progress> keeps its
+    //    default 160px, so the browser draws a 160px bar even though the CSS says left:0;right:0.
+    //    Emitting a stretch anchor for it produced a canvas offset of parentWidth - 160 and a widget
+    //    width of -1120 at 640, i.e. nothing drawn at all. When the measured box does not reach the
+    //    far inset, fall through and pin it to the leading edge with its measured size instead.
+    //    Compare sizes, not absolute edges: the sample's pos can be page-absolute while parentSize is
+    //    the parent's extent, and mixing the two frames made a genuinely stretched overlay look
+    //    unstretched. The span the insets imply is frame independent.
+    const insetPx = (inset) => (inset ? (inset.kind === 'pct' ? inset.value * base.parentSize : inset.value) : 0);
+    const impliedSpan = base.parentSize - insetPx(near) - insetPx(far);
+    const stretchReachesFar = near && far && !hasDeclaredSize
+      ? base.size >= impliedSpan - 2
+      : false;
+    if (stretchReachesFar) {
       const min = near.kind === 'pct' ? V.clamp(near.value, 0, 1) : 0;
       const max = far.kind === 'pct' ? 1 - V.clamp(far.value, 0, 1) : 1;
       return {

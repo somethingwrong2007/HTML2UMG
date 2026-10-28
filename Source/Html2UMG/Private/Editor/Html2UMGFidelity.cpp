@@ -25,6 +25,7 @@
 #include "Misc/Paths.h"
 #include "Rendering/SlateRenderer.h"
 #include "Styling/SlateBrush.h"
+#include "AssetCompilingManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Importer/Html2UMGImporter.h"
 #include "Misc/CString.h"
@@ -328,6 +329,16 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 		OutError = FString::Printf(TEXT("Could not create an instance of '%s'."), *WidgetClass->GetName());
 		return false;
 	}
+
+	// Finish the texture builds the widget's assets need BEFORE Slate draws.
+	//
+	// A texture package stores its source, not its built mips: those are rebuilt on load (from the
+	// DDC) and the build is asynchronous. An interactive editor ticks and it just happens; this
+	// renderer is a single pass inside a commandlet, so without this the widget draws with 32x32
+	// placeholder textures and every bitmapped brush comes out blank - which reads exactly like "the
+	// importer did not map the images".
+	FlushAsyncLoading();
+	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	// Make every brush point at its texture again before Slate builds the tree.
 	//

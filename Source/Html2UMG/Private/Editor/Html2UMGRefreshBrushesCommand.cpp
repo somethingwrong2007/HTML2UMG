@@ -12,6 +12,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
 #include "Styling/SlateBrush.h"
+#include "Engine/Texture2D.h"
 #include "UObject/Package.h"
 #include "FileHelpers.h"
 #include "Misc/PackageName.h"
@@ -166,7 +167,10 @@ namespace
 					return;
 				}
 				Widgets += 1;
-				if (Widget->GetClass()->GetName().Contains(TEXT("Slider")) || Widget->GetClass()->GetName().Contains(TEXT("CheckBox")))
+				const FString ClassName = Widget->GetClass()->GetName();
+				if (ClassName.Contains(TEXT("Slider")) || ClassName.Contains(TEXT("CheckBox"))
+					|| ClassName.Contains(TEXT("Border")) || ClassName.Contains(TEXT("Image"))
+					|| ClassName.Contains(TEXT("Progress")) || ClassName.Contains(TEXT("Button")))
 				{
 					UE_LOG(LogHtml2UMG, Display, TEXT("  [%s] %s %s class=%s"), Label, *Widget->GetName(),
 						*Widget->GetClass()->GetName(), *Widget->GetClass()->GetName());
@@ -185,11 +189,23 @@ namespace
 								{
 									FSlateBrush* Brush = SP->ContainerPtrToValuePtr<FSlateBrush>(Memory);
 									UObject* Res = Brush ? Brush->GetResourceObject() : nullptr;
-									UE_LOG(LogHtml2UMG, Display, TEXT("      [%s] %s.%s -> %s (drawAs=%d imageSize=%.0fx%.0f)"),
-										Where, *Struct->GetName(), *SP->GetName(),
-										Res ? *Res->GetPathName() : TEXT("<none>"),
+									FString ResourceInfo = Res ? Res->GetPathName() : TEXT("<none>");
+									if (UTexture2D* Texture = Cast<UTexture2D>(Res))
+									{
+										// The two facts that decide whether Slate can build a resource:
+										// the size it thinks it has, and whether platform data exists.
+										ResourceInfo += FString::Printf(TEXT(" [%dx%d, platformData=%s, srgb=%s, pkg=%s, source=%dx%d]"),
+											Texture->GetSizeX(), Texture->GetSizeY(),
+											Texture->GetPlatformData() != nullptr ? TEXT("yes") : TEXT("NO"),
+											Texture->SRGB ? TEXT("on") : TEXT("off"),
+											*Texture->GetOutermost()->GetName(),
+											Texture->Source.GetSizeX(), Texture->Source.GetSizeY());
+									}
+									UE_LOG(LogHtml2UMG, Display, TEXT("      [%s] %s.%s -> %s (drawAs=%d imageSize=%.0fx%.0f imageType=%d)"),
+										Where, *Struct->GetName(), *SP->GetName(), *ResourceInfo,
 										Brush ? static_cast<int32>(Brush->DrawAs) : -1,
-										Brush ? Brush->ImageSize.X : 0.0f, Brush ? Brush->ImageSize.Y : 0.0f);
+										Brush ? Brush->ImageSize.X : 0.0f, Brush ? Brush->ImageSize.Y : 0.0f,
+										Brush ? static_cast<int32>(Brush->ImageType) : -1);
 								}
 								else
 								{
