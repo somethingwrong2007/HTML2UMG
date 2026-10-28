@@ -28,6 +28,7 @@
 #include "UObject/Package.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
+#include "AssetCompilingManager.h"
 
 static TFunction<void(const FH2UMessage&)> GMessageSink;
 
@@ -324,6 +325,14 @@ bool FHtml2UMGImporter::ImportLayout(const FH2ULayout& Layout, const FH2UImportO
 	// ---- 7. save ----
 	if (Options.bSave)
 	{
+		// Let pending asset work finish before writing.
+		//
+		// Importing a png queues its build; writing the package while that is still in flight stores
+		// whatever state the asset happens to be in. Draining the queues first means the file on disk
+		// matches what we just built, which is the only state that can be reasoned about later.
+		FlushAsyncLoading();
+		FAssetCompilingManager::Get().FinishAllCompilation();
+
 		TArray<UPackage*> PackagesToSave;
 		PackagesToSave.Add(WidgetBlueprint->GetOutermost());
 		for (UPackage* Package : Assets.GetTouchedPackages())
@@ -334,7 +343,9 @@ bool FHtml2UMGImporter::ImportLayout(const FH2ULayout& Layout, const FH2UImportO
 			}
 		}
 
-		if (!UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/true))
+		// Save every package we touched, dirty or not. An asset that came back from the importer
+		// already marked clean would otherwise be skipped, leaving whatever was on disk before.
+		if (!UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/false))
 		{
 			Warn(FString::Printf(TEXT("Saving '%s' (and %d asset package(s)) failed."), *BlueprintPath, Assets.GetTouchedPackages().Num()));
 		}
