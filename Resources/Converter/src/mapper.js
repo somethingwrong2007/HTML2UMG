@@ -27,6 +27,10 @@ const CLASS = {
   IMAGE: 'Image',
   BUTTON: 'Button',
   EDITABLE: 'EditableTextBox',
+  // <input type="number"> -> UMG SpinBox. It carries its own arrows and background as part of
+  // FSpinBoxStyle, so the browser's UA spinner needs no baking; only the range, font, colour and
+  // padding are taken from the design.
+  SPIN_BOX: 'SpinBox',
   COMBO: 'ComboBoxString',
   PROGRESS: 'ProgressBar',
   CHECK_BOX: 'CheckBox',
@@ -85,7 +89,7 @@ const REPLACED_TAGS = {
  * decoration), while containers hand their name to the Border instead.
  */
 const LEAF_KINDS = new Set([
-  'text', 'image', 'button', 'textinput', 'combobox', 'progress', 'checkbox', 'slider', 'placeholder',
+  'text', 'image', 'button', 'textinput', 'spinbox', 'combobox', 'progress', 'checkbox', 'slider', 'placeholder',
   // classifyInput() emits the HTML input types, not the widget names: a range is
   // 'range' and a radio is 'radio'. Without them the element's name lands on the
   // decoration Border and the real Slider/CheckBox is emitted as '<name>_Content'.
@@ -2253,12 +2257,15 @@ class Mapper {
         return 'button';
       case 'hidden':
         return 'skip';
+      case 'number':
+        // A number field is a spinner in the browser too, so it becomes a real SpinBox rather than
+        // an edit box that cannot step. min/max/step come from the element's attributes.
+        return 'spinbox';
       case 'password':
       case 'email':
       case 'search':
       case 'tel':
       case 'url':
-      case 'number':
       case 'text':
         return 'textinput';
       default:
@@ -3098,6 +3105,8 @@ class Mapper {
         return this.buildButton(rec, style, ctx, name);
       case 'textinput':
         return this.buildTextInput(rec, style, name);
+      case 'spinbox':
+        return this.buildSpinBox(rec, style, name);
       case 'combobox':
         return this.buildComboBox(rec, style, name);
       case 'progress':
@@ -3595,6 +3604,81 @@ class Mapper {
     // WidgetStyle.ForegroundColor (set above) and is exposed through a setter function only.
     node.properties = props;
     this.meta.set(node, { rec, style, kind: 'textinput' });
+    return node;
+  }
+
+  /**
+   * <input type="number"> -> UMG SpinBox.
+   *
+   * A number field is a spinner in the browser as well, so it becomes a real SpinBox instead of an
+   * edit box that cannot step. The browser draws its own spinner arrows from the UA stylesheet (only
+   * on hover), so there is nothing to bake: FSpinBoxStyle already carries ArrowsImage with the
+   * engine's default style, and we override only what the design states - range, font, colour,
+   * padding. Leaving the rest of the struct alone is deliberate; writing an empty WidgetStyle would
+   * wipe the arrows.
+   */
+  buildSpinBox(rec, style, name) {
+    const node = this.makeNode(name, CLASS.SPIN_BOX, rec);
+    const form = rec.form || {};
+    const ctl = rec.control || {};
+    const label = this.label(rec);
+    const props = {};
+
+    // HTML numbers are strings and may be absent; a missing min/max keeps UMG's own default.
+    const num = (raw) => {
+      if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const min = num(form.min);
+    const max = num(form.max);
+    const step = num(form.step);
+    let value = num(form.value);
+    if (value === null) value = min !== null ? min : 0;
+    // The browser clamps a typed value into the range on commit; do the same at build time.
+    if (min !== null && value < min) value = min;
+    if (max !== null && value > max) value = max;
+
+    props.Value = value;
+    if (min !== null) props.MinValue = min;
+    if (max !== null) props.MaxValue = max;
+    if (step !== null && step > 0) props.Delta = step;
+    // UMG shows the arrows of its own accord (the engine default style carries ArrowsImage); 5.8
+    // has no "always show" flag any more, so there is nothing to force here.
+    //
+    // A whole-number field must not render as "45.0": the browser shows what the author typed, so
+    // take the decimal count from the value and the step rather than from UMG's default of one.
+    const decimals = (raw) => {
+      const text = String(raw === null || raw === undefined ? '' : raw);
+      const dot = text.indexOf('.');
+      return dot < 0 ? 0 : Math.min(6, text.length - dot - 1);
+    };
+    props.MinFractionalDigits = 0;
+    props.MaxFractionalDigits = Math.max(decimals(form.value), decimals(step));
+
+    props.Font = this.fontProperties(rec, style, new Map(), String(form.value || ''));
+
+    const textColor = this.colorOf(ctl.computed) || style.color;
+    const widgetStyle = { ForegroundColor: textColor };
+    const normal = this.visualBrush(ctl.box, { label: `${label} box`, allowEmpty: true }) ||
+      (style.hasVisualBox ? this.borderBrush(style, rec) : null);
+    if (normal) {
+      const hover = ctl.states && ctl.states.hover
+        ? this.visualBrush(ctl.states.hover, { label: `${label}:hover`, allowEmpty: true })
+        : null;
+      widgetStyle.BackgroundBrush = normal;
+      widgetStyle.HoveredBackgroundBrush = hover || normal;
+      widgetStyle.ActiveBackgroundBrush = (ctl.states && ctl.states.focus
+        ? this.visualBrush(ctl.states.focus, { label: `${label}:focus`, allowEmpty: true })
+        : null) || hover || normal;
+    }
+    const inset = this.controlInset(style, ctl.box, label);
+    if (inset) widgetStyle.TextPadding = inset;
+    props.WidgetStyle = widgetStyle;
+
+    node.properties = props;
+    this.meta.set(node, { rec, style, kind: 'spinbox' });
     return node;
   }
 

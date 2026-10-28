@@ -24,7 +24,7 @@ const CONTRACT_VERSION = 1;
 const KNOWN_CLASSES = new Set([
   'VerticalBox', 'HorizontalBox', 'WrapBox', 'GridPanel', 'UniformGridPanel', 'CanvasPanel',
   'Overlay', 'Border', 'SizeBox', 'ScaleBox', 'ScrollBox', 'TextBlock', 'Image', 'Button',
-  'EditableTextBox', 'ComboBoxString', 'ProgressBar', 'CheckBox', 'Slider', 'Spacer',
+  'EditableTextBox', 'ComboBoxString', 'ProgressBar', 'CheckBox', 'Slider', 'Spacer', 'SpinBox',
   'RichTextBlock', 'NamedSlot', 'RetainerBox', 'SafeZone', 'ExpandableArea', 'ListView',
   'StackBox', 'WidgetSwitcher', 'Throbber', 'CircularThrottle',
   // Semantic container: the importer resolves it to CommonUI's animated switcher when the project
@@ -87,7 +87,7 @@ const SLOT_CLASS = {
 const MAX_CHILDREN = {
   Border: 1, SizeBox: 1, ScaleBox: 1, ScrollBox: 1, Button: 1, RetainerBox: 1, SafeZone: 1, BackgroundBlur: 1,
   H2URelativeBox: 1, H2UTextWrapBox: 1,
-  TextBlock: 0, Image: 0, ProgressBar: 0, EditableTextBox: 0, ComboBoxString: 0,
+  TextBlock: 0, Image: 0, ProgressBar: 0, EditableTextBox: 0, ComboBoxString: 0, SpinBox: 0,
   CheckBox: 0, Slider: 0, Spacer: 0, Throbber: 0,
 };
 

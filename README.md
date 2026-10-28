@@ -108,6 +108,7 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 | `<img>` / `background-image` | `Border` 或 `Image` + 导入的贴图 |
 | `<button>` | `UButton`（含 hover / pressed / disabled 三态） |
 | `<input type=text>` | `EditableTextBox` |
+| `<input type=number>` | **`SpinBox`**：`min`/`max`/`step`/`value` 直接映射到 `MinValue`/`MaxValue`/`Delta`/`Value`，小数位按值推断（整数不显示 `45.0`）。箭头是 `FSpinBoxStyle.ArrowsImage`，由引擎默认样式提供——浏览器的 spinner 是 UA 绘制的、只在 hover 出现，没有东西需要烘焙 |
 | `<textarea>` | 多行 `EditableTextBox` |
 | `<select>` | `ComboBoxString`（含选项） |
 | `<input type=checkbox>` | `CheckBox`（含勾选态） |
@@ -117,6 +118,11 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 
 原生 `<select>` 能接受的样式很有限，所以真实设计里的下拉框基本是 div 自绘的。这种用
 `data-ue-control="combobox"` 就能强制映射成真正的 `UComboBoxString`。
+
+**"步进器"和 SpinBox 是两件事**，别混：`<input type=number>` 是浏览器自带 spinner 的输入框 → `SpinBox`
+（箭头由引擎样式画）；而设计稿里那种「`−` 数值 `＋`」的步进器是**两个按钮 + 一个文本**，转换出来就是
+`Button` + `TextBlock`，符号是**文字**（`−` U+2212 / `＋` U+FF0B），跟着字体走，不需要额外图标资产。
+`test/18-inputs.html` 把三种情况放在一页里做对照。
 
 ### 样式
 

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>18 — 输入控件（number → SpinBox）</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 720px; height: 240px; background: #F7F9FB; }
+  body { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; color: #1A1A1A; display: flex; flex-direction: column; gap: 16px; padding: 24px; }
+  label { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .caption { width: 140px; color: #5C5C5C; }
+  input[type="number"] {
+    width: 132px; height: 32px; padding: 0 8px; font-size: 13px;
+    border: 1px solid rgba(0,0,0,.11); border-radius: 6px; background: #FFFFFF; color: #1A1A1A;
+  }
+  input[type="text"] {
+    width: 220px; height: 32px; padding: 0 8px; font-size: 13px;
+    border: 1px solid rgba(0,0,0,.11); border-radius: 6px; background: #FFFFFF; color: #1A1A1A;
+  }
+  /* 步进器：两个按钮 + 中间数值，符号是文字而不是图标 */
+  .stepper { display: flex; align-items: center; gap: 0; border: 1px solid rgba(0,0,0,.11); border-radius: 6px; overflow: hidden; height: 32px; }
+  .stepper button { width: 32px; height: 32px; border: 0; background: #EFEFEF; color: #1A1A1A; font-size: 15px; }
+  .stepper .val { width: 64px; text-align: center; font-size: 13px; line-height: 32px; background: #FFFFFF; }
+</style>
+</head>
+<body>
+  <label>
+    <span class="caption">渲染距离（number）</span>
+    <input type="number" data-ue-name="SpinRange" min="0" max="100" step="5" value="45">
+  </label>
+  <label>
+    <span class="caption">备注（text）</span>
+    <input type="text" data-ue-name="TextNote" value="目视飞行" placeholder="备注">
+  </label>
+  <label>
+    <span class="caption">步进器（按钮）</span>
+    <div class="stepper">
+      <button data-ue-name="BtnMinus">−</button>
+      <div class="val" data-ue-name="StepValue">144</div>
+      <button data-ue-name="BtnPlus">＋</button>
+    </div>
+  </label>
+</body>
+</html>
