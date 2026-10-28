@@ -146,10 +146,13 @@ cli/convert.js   编排 + 输出 + 退出码
 
 * 叶子控件（`TextBlock`/`Image`/`Button`/表单控件）→ **叶子**（`BindWidget` 要绑的就是它）；
 * 容器 → **`Border`**（面板的视觉本体），没有 Border 时给 `ScrollBox`，再没有才给内容容器；
-* 其余合成节点一律带后缀且 `variable:false`：`<Name>_Size`、`<Name>_BG` / `<Name>_Pad`、`<Name>_Scroll`、`<Name>_Content`。
+* 其余合成节点一律带**一个短角色后缀**且 `variable:false`：`<Name>_Box`（SizeBox）、`<Name>_Inner`（内容容器）、
+  `<Name>_BG` / `<Name>_Pad`（背景/内边距 Border）、`<Name>_Blur`、`<Name>_Scroll`、`<Name>_Row`（百分比行）、
+  `<Name>_Wrap`（文本换行盒）、`<Name>_Flow`（流组）。后缀只从**元素自己的基名**派生，不链式叠加
+  （`Item_1Text`，不会出现 `Item_1_Inner_Text`）。
 
 所以 `data-ue-name="StatusPanel"` 出现在 `div.hud` 上时，WBP 里有一个名为 `StatusPanel` 的 `Border`，
-它的外层是 `StatusPanel_Size`、内层是 `StatusPanel_Content`。
+它的外层是 `StatusPanel_Box`、内层是 `StatusPanel_Inner`。
 
 ### 控制属性
 
