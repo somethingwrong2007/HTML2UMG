@@ -4,6 +4,7 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "Widgets/SWidget.h"
@@ -23,6 +24,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/SlateRenderer.h"
+#include "Styling/SlateBrush.h"
 #include "HAL/IConsoleManager.h"
 #include "Importer/Html2UMGImporter.h"
 #include "Misc/CString.h"
@@ -37,6 +39,66 @@ namespace
 {
 	/** Render targets and PNG rows both blow up beyond this; keep the request sane. */
 	constexpr int32 MaxRenderDimension = 8192;
+
+	/**
+	 * Re-assign every brush's resource to itself, so Slate rebuilds the cached resource handle.
+	 *
+	 * A Widget Blueprint loaded from disk holds valid brush ResourceObjects, but FSlateBrush caches a
+	 * render handle per brush, and a handle created while the texture was still loading stays empty:
+	 * the widget paints nothing. Measured on a Slider: the loaded blueprint rendered 0 pixels in its
+	 * style area, re-importing the very same layout in that session rendered 5160, and the dumped
+	 * properties were identical. In game, streaming refreshes the handle; a single-pass offscreen
+	 * render gives it no chance, so do it explicitly here.
+	 */
+	void RefreshBrushFieldsInStruct(const UStruct* Struct, void* Memory, int32 Depth)
+	{
+		if (Struct == nullptr || Memory == nullptr || Depth > 6)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			FStructProperty* StructProperty = CastField<FStructProperty>(*It);
+			if (StructProperty == nullptr)
+			{
+				continue;
+			}
+
+			if (StructProperty->Struct == TBaseStructure<FSlateBrush>::Get())
+			{
+				FSlateBrush* Brush = StructProperty->ContainerPtrToValuePtr<FSlateBrush>(Memory);
+				if (Brush != nullptr)
+				{
+					if (UObject* Resource = Brush->GetResourceObject())
+					{
+						Brush->SetResourceObject(nullptr);
+						Brush->SetResourceObject(Resource);
+					}
+				}
+			}
+			else
+			{
+				RefreshBrushFieldsInStruct(StructProperty->Struct, StructProperty->ContainerPtrToValuePtr<void>(Memory), Depth + 1);
+			}
+		}
+	}
+
+	void RefreshBrushResources(UUserWidget* UserWidget)
+	{
+		if (UserWidget == nullptr || UserWidget->WidgetTree == nullptr)
+		{
+			return;
+		}
+
+		UserWidget->WidgetTree->ForEachWidget([](UWidget* Widget)
+		{
+			if (Widget != nullptr)
+			{
+				RefreshBrushFieldsInStruct(Widget->GetClass(), Widget, 0);
+			}
+		});
+	}
 
 	/** Diagnostics for the geometry dump: how many widgets were reachable and actually measured. */
 	int32 GGeometryWidgetCount = 0;
@@ -263,6 +325,16 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 		OutError = FString::Printf(TEXT("Could not create an instance of '%s'."), *WidgetClass->GetName());
 		return false;
 	}
+
+	// Make every brush point at its texture again before Slate builds the tree.
+	//
+	// A loaded asset carries valid brush ResourceObjects, but Slate caches a resource HANDLE per
+	// brush, and a handle created before the texture finished loading stays empty - the widget then
+	// paints nothing even though the data is perfect. Measured: a Slider in a loaded Widget
+	// Blueprint rendered 0 pixels, the same asset re-imported in that session rendered 5160, and the
+	// dumped properties were byte-for-byte identical. In a game the texture streams in and the
+	// handle refreshes; an offscreen single-pass render never gives it that chance.
+	RefreshBrushResources(UserWidget);
 
 	// 4) Draw it offscreen.
 	// Gamma correction must be ON: the reference this gets compared against is a browser

@@ -272,6 +272,10 @@ bool FHtml2UMGAssetImport::ImportAll(const FH2UMessageSink& Sink)
 	{
 		PruneUnusedTextures(Sink);
 	}
+	else if (Layout.Textures.Num() > 0)
+	{
+		ReportUnusedTextures(Sink);
+	}
 
 	// The converter also lists every fallback as a normal font entry so its key resolves. Importing
 	// those eagerly would create a UFont family asset per fallback family (a Chinese-only font asset
@@ -328,7 +332,7 @@ bool FHtml2UMGAssetImport::ImportAll(const FH2UMessageSink& Sink)
 	return !bHasErrors;
 }
 
-void FHtml2UMGAssetImport::PruneUnusedTextures(const FH2UMessageSink& Sink)
+void FHtml2UMGAssetImport::GatherUnusedTextures(TArray<UObject*>& OutUnused, TArray<FString>& OutNames) const
 {
 	FAssetRegistryModule& AssetRegistryModule =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
@@ -346,8 +350,6 @@ void FHtml2UMGAssetImport::PruneUnusedTextures(const FH2UMessageSink& Sink)
 		}
 	}
 
-	TArray<UObject*> ToDelete;
-	TArray<FString> Names;
 	for (const FAssetData& Asset : Existing)
 	{
 		if (Keep.Contains(Asset.PackageName))
@@ -362,10 +364,33 @@ void FHtml2UMGAssetImport::PruneUnusedTextures(const FH2UMessageSink& Sink)
 		}
 		if (UObject* Loaded = Asset.GetAsset())
 		{
-			ToDelete.Add(Loaded);
-			Names.Add(Asset.AssetName.ToString());
+			OutUnused.Add(Loaded);
+			OutNames.Add(Asset.AssetName.ToString());
 		}
 	}
+}
+
+void FHtml2UMGAssetImport::ReportUnusedTextures(const FH2UMessageSink& Sink)
+{
+	TArray<UObject*> Unused;
+	TArray<FString> Names;
+	GatherUnusedTextures(Unused, Names);
+	if (Names.Num() > 0)
+	{
+		// Reporting only: the asset registry's referencers do not include the UObject links that a
+		// widget's brush holds, so "unreferenced" here means "not proven to be in use", not "safe to
+		// delete". Deleting on that basis left Sliders and CheckBoxes with missing bitmaps.
+		Message(Sink, TEXT("info"), FString::Printf(
+			TEXT("assets: %d bitmap(s) in %s look unused by this layout (%s); run Html2UMG.PruneAssets %s to review and delete them"),
+			Names.Num(), *TextureRoot, *FString::Join(Names, TEXT(", ")), *TextureRoot));
+	}
+}
+
+void FHtml2UMGAssetImport::PruneUnusedTextures(const FH2UMessageSink& Sink)
+{
+	TArray<UObject*> ToDelete;
+	TArray<FString> Names;
+	GatherUnusedTextures(ToDelete, Names);
 
 	if (ToDelete.Num() > 0)
 	{

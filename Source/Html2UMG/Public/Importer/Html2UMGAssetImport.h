@@ -118,7 +118,11 @@ private:
 	 */
 	FString TextureRoot;
 
-	/** Deletes bitmaps left in TextureRoot that this layout does not use and nothing references. */
+	/** Bitmaps left in TextureRoot that this layout does not use and that nothing proves is in use. */
+	void GatherUnusedTextures(TArray<UObject*>& OutUnused, TArray<FString>& OutNames) const;
+	/** Logs the candidates without deleting them (the safe default). */
+	void ReportUnusedTextures(const FH2UMessageSink& Sink);
+	/** Deletes the candidates. Opt-in only: see the warning on bPruneUnusedPageAssets. */
 	void PruneUnusedTextures(const FH2UMessageSink& Sink);
 
 	/** Fonts stay shared: the same face is reused by every page that asks for it. */

@@ -137,8 +137,16 @@ struct HTML2UMG_API FH2UImportOptions
 	bool bNestPageFolder = true;
 	/** Where font families go. Empty = AssetOutputRoot/Fonts. */
 	FString FontOutputRoot;
-	/** Delete bitmaps in <page>/assets that the layout no longer uses (they belong to this page). */
-	bool bPruneUnusedPageAssets = true;
+	/**
+	 * Delete bitmaps in <page>/assets that the layout no longer uses.
+	 *
+	 * OFF by default, and that default is load-bearing: the asset registry's referencers do not
+	 * include the UObject references that a widget's brush / widget-style struct holds, so a texture
+	 * that a saved Slider or CheckBox is using looks unreferenced and gets deleted. The widget then
+	 * renders nothing (its brush points at a missing asset) until it is imported again. Use
+	 * Html2UMG.PruneAssets to review candidates instead.
+	 */
+	bool bPruneUnusedPageAssets = false;
 
 	bool bImportTextures = true;
 	bool bImportFonts = true;

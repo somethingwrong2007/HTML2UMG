@@ -25,7 +25,24 @@ namespace
 	 */
 	void PruneAssetsCommand(const TArray<FString>& Args)
 	{
-		FString Folder = Args.Num() > 0 ? Args[0] : TEXT("/Game/Html2UMG");
+		// Dry run unless "force" is passed. The registry's referencers do not include the UObject
+		// links a widget's brush holds (that deleted a Slider's bitmap once and made the control
+		// render nothing), so deleting on this signal alone has to be an explicit decision.
+		bool bForce = false;
+		TArray<FString> Positional;
+		for (const FString& Arg : Args)
+		{
+			if (Arg.Equals(TEXT("force"), ESearchCase::IgnoreCase) || Arg.Equals(TEXT("--force"), ESearchCase::IgnoreCase))
+			{
+				bForce = true;
+			}
+			else if (!Arg.StartsWith(TEXT("-")))
+			{
+				Positional.Add(Arg);
+			}
+		}
+
+		FString Folder = Positional.Num() > 0 ? Positional[0] : TEXT("/Game/Html2UMG");
 		if (!Folder.StartsWith(TEXT("/")))
 		{
 			Folder = TEXT("/Game/") + Folder;
@@ -60,6 +77,15 @@ namespace
 			UE_LOG(LogHtml2UMG, Display,
 				TEXT("Html2UMG.PruneAssets: %d asset(s) under '%s', all referenced - nothing to delete."),
 				Assets.Num(), *Folder);
+			return;
+		}
+
+		if (!bForce)
+		{
+			UE_LOG(LogHtml2UMG, Display,
+				TEXT("Html2UMG.PruneAssets: %d candidate(s) of %d under '%s' have no registry referencers (%s%s). Nothing was deleted; pass 'force' to delete them."),
+				ToDelete.Num(), Assets.Num(), *Folder,
+				*FString::Join(Names, TEXT(", ")).Left(200), Names.Num() > 6 ? TEXT(", ...") : TEXT(""));
 			return;
 		}
 
