@@ -2354,9 +2354,10 @@ class Mapper {
     if (autoWrap) {
       // responsive: no baked wrap width - the run-time allotted width decides, so the text
       // reflows inside the game instead of being frozen at the design width.
-      // 'native' keeps a baked WrapTextAt: stock UMG cannot re-wrap without one (measured:
-      // AutoWrapText alone reports one line), so a plugin-free build trades reflow for correctness.
-      const wrapWidth = this.runtimeWidgets() ? 0 : this.wrapTextAt(rec, style, fontProps, text);
+      // Responsive mode never bakes a wrap width: STextBlock re-wraps at the allotted width during
+      // paint and invalidates layout when the measured height changes, so plain AutoWrapText settles
+      // on the second frame. Only exact mode bakes, because it wants the design-size lines frozen.
+      const wrapWidth = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, fontProps, text);
       if (wrapWidth > 0) props.WrapTextAt = wrapWidth;
       // A space-less CJK run has no break point Slate's line breaker will use, so allow the
       // per-character fallback. Latin text is unaffected unless a single word is wider than the box.
@@ -2471,7 +2472,7 @@ class Mapper {
     if (!runKeepShadow) node.properties.ShadowOffset = runShadow ? runShadow.offset : [0, 0];
     if (runShadow) node.properties.ShadowColorAndOpacity = runShadow.color;
     if (runAutoWrap) {
-      const runWrap = this.runtimeWidgets() ? 0 : this.wrapTextAt(rec, style, runFont, out);
+      const runWrap = this.responsiveMode() ? 0 : this.wrapTextAt(rec, style, runFont, out);
       if (runWrap > 0) node.properties.WrapTextAt = runWrap;
       if (this.cjkBreakMode() !== 'none') node.properties.WrappingPolicy = 'AllowPerCharacterWrapping';
     }
@@ -2945,15 +2946,20 @@ class Mapper {
    * runtime control fixes it by writing its allotted width into the inner block's WrapTextAt, so
    * the value is only correct once that widget is imported. Env: HTML2UMG_TEXT_WRAP_BOX=1.
    */
+  /**
+   * Off by default: STextBlock already re-wraps at its allotted width during paint and calls
+   * Invalidate(Layout) when the measured height changed, so plain AutoWrapText settles on the
+   * second frame (verified: 17px on pass 1, 51px on pass 2 - identical to an explicit WrapTextAt).
+   * The wrapper is kept behind HTML2UMG_TEXT_WRAP_BOX=1 for designs that must be correct on the
+   * very first frame (a widget that is screenshotted before it ever ticks).
+   */
   textWrapBoxMode() {
-    // On by default now that the control exists; HTML2UMG_TEXT_WRAP_BOX=0 is a kill switch for
-    // bisecting a bad render without a code change.
     const raw = this.opts.textWrapBox !== undefined
       ? this.opts.textWrapBox
       : process.env.HTML2UMG_TEXT_WRAP_BOX;
     const text = String(raw === undefined ? '' : raw).toLowerCase();
-    if (!text) return true;
-    return !(text === '0' || text === 'off' || text === 'false');
+    if (!text) return false;
+    return text === '1' || text === 'on' || text === 'true';
   }
 
   cjkBreakMode() {
@@ -4012,7 +4018,10 @@ class Mapper {
         // responsive: the runtime subclass recomputes its desired HEIGHT from the width it was last
         // arranged at, so the column count (and therefore the height a parent sees) follows the
         // viewport. A plain WrapBox can only report the design-time WrapSize it was born with.
-        cls = this.runtimeWidgets() ? CLASS.WRAP_BOX_RUNTIME : CLASS.WRAP;
+        // Plain WrapBox: SWrapBox writes the allotted width into PreferredSize from its Tick, and
+        // that attribute invalidates layout, so the row count and the reported height both settle
+        // on the second frame (verified: 592 stay at 1920, 896 at 1280, no runtime widget needed).
+        cls = CLASS.WRAP;
         nodeKind = 'wrap';
         orientation = 'w';
       } else if (style.flexDirection === 'column' || style.flexDirection === 'column-reverse') {

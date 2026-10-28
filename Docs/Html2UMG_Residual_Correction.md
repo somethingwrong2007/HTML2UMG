@@ -208,7 +208,7 @@ cjk-after 上这条规则把 17 条偏移收敛到 5 条（+8 / +35 / −52.25 /
 本机 `python` 不在 PATH 里时，用 DSH 自带解释器（任何 3.8+ 均可）：
 
 ```bat
-set PY=python
+set PY=C:\Users\ADMIN\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
 ```
 
 ### 6.1 只出报告（不跑编辑器）

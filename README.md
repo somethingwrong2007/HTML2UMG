@@ -186,57 +186,59 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 `Border.Padding` 让给流式子项，让 CanvasPanel 正好落在内边距盒上——之前画布落在内容盒里，
 浮层会整体偏一个 padding（实测 12-responsive 的浮层偏了 24/96 px）。
 
-### 三个运行时控件
+### 运行时控件：只剩一个，而且只有混合单位尺寸才用得上
 
-插件现在有两个模块：编辑器模块 `Html2UMG`，以及一个只含三个控件的 **Runtime 模块 `Html2UMGRuntime`**
-（`Type=Runtime`，只在 UI 真正需要时才被用到，不依赖编辑器模块）。
+这里早期有三个 Runtime 控件，后来核对引擎源码 + 多帧实测，**删掉了两个**——原生 UMG 本来就能做，
+只是晚一帧：
 
-| 控件 | 解决什么 |
-|---|---|
-| `H2URelativeBox` | 百分比宽度 + px 上下限 + 对齐。因为 `USizeBox` 的 min/max 只夹"期望尺寸"，Fill 槽里运行期完全不生效 |
-| `H2UTextWrapBox` | 让文本**随容器宽度重新折行**。Slate 的 `TextBlock` 在 VerticalBox 的 Automatic 槽里拿不到有界宽度，desired 会按一行算，arrange 再折行就被裁掉 |
-| `H2UWrapBox` | 让 WrapBox 的**自身高度**按真实宽度算。`SWrapBox` 的换行宽度是 `WrapSize`（设计期常量），换分辨率后行数变了高度不会跟着变 |
+- `STextBlock::OnPaint` 自己写着："we may have been arranged in a different box than what we were
+  cached with, which might update wrapping" —— 它在绘制时按真实 allotted 宽度重排文本，desired size
+  变了就 `Invalidate(Layout)`；
+- `SWrapBox::Tick` 在 `bUseAllottedSize`（= `bExplicitWrapSize` 为 false）时把 allotted 宽度写进
+  `PreferredSize`，而这个属性声明为 `EInvalidateWidgetReason::Layout`，下一趟 prepass 就重算行数。
 
-三者都在 `OnArrangeChildren` 里用真实 allotted 宽度重算，并在高度变化时
-`Invalidate(Previsit)` 请求重排；转换器会把设计期的容器宽度写进 `DesignWrapWidth` 作为首帧依据。
+实测（同一段 79 个汉字，SizeBox 固定 432 宽）：
 
-### 不想依赖插件？`--runtime=native`
-
-**插件只是保真度升级，不是硬依赖**。三条路，按"能否移除插件"排：
-
-| 模式 | 产物依赖 | 设计尺寸 | 换分辨率 | 说明 |
-|---|---|---|---|---|
-| `--layout=exact`（默认） | **纯原生 UMG** | 1.45% | 2.42% | 定宽稿走这条，**今天就不需要插件** |
-| `--layout=responsive --runtime=native` | **纯原生 UMG** | 1.48% | 10.08% | 流体稿的"无插件"版本，代价见下 |
-| `--layout=responsive`（默认 plugin） | 需要 Runtime 模块 | 1.21% | **2.72%** | 完整保真 |
-
-（表里是同一份流体稿 14-fluid 的数字；定宽稿 12-responsive 两种 runtime 模式在设计尺寸下完全一样，因为它
-的卡片宽度本来就是定值。）
-
-`--runtime=native` 会按构造逐条降级，并在转换日志里**明确告警**，不会静默：
-
-| 构造 | 原生替代 | 代价 |
+| 组 | 第 1 帧 | 第 2 帧 |
 |---|---|---|
-| 折行文本 | 显式 `WrapTextAt` = 设计宽 | 文本不再随宽度重排。**必须给**：实测 `AutoWrapText` 单独存在时文本块只量 1 行（17px vs 51px）并被裁 |
-| `width: 92%; max-width: 1240px` | 保留夹紧后的 1240px + 槽位居中 | 丢百分比：1280 下仍是 1240 宽（应 1177.6），会偏 |
-| 纯 `width: 50%` | `[spacer][child][spacer]` 的 Fill 权重行 | 无（这条本来就纯原生） |
-| WrapBox 换行 | 普通 `WrapBox` + `WrapSize` = 设计宽 | 行会随宽度重排，但**上报高度**还是设计值 |
-| 居中容器 | Overlay 槽 | 无（Overlay 是原生控件） |
+| `AutoWrapText`，不给 `WrapTextAt` | 17px（1 行，被裁） | **51px（3 行）** |
+| `WrapTextAt=432` | 51px | 51px |
 
-也就是说：**只画流式布局、不依赖"百分比 + px 夹子"的稿子，用 native 几乎无损**；一旦稿子靠
-`min(px, %)` 这类分段函数控制尺寸，要么用插件，要么接受换分辨率时的偏移。
+所以离线验收**必须跑两帧**（`Html2UMG.RenderFrames`，默认 2）。单帧截图会系统性地低估自动折行文本和
+换行盒——"文本不换行、WrapBox 高度不跟着变"的结论就是这样误判出来的。
 
-### 实测（同一份 WBP，只换渲染分辨率）
+现在只剩 `H2URelativeBox`，而且只有设计稿真的写了**混合单位尺寸**（`min(1240px, 92vw)`、`clamp()`）
+才会出现。纯百分比、纯 px、min/max 单独用、居中、换行、拉伸锚，全都用原生控件。
 
-| 稿子 | 1920×1080 | 1440×1080 (4:3) | 1280×720 |
+### 混合单位尺寸这一件事
+
+`width: 92%; max-width: 1240px` 这种"百分比 + px 夹子"是 UMG 唯一表达不了的东西：百分比靠 Canvas 的
+比例锚点（会丢失上限），px 夹子靠 `SizeBox` 的 `MaxDesiredWidth`（只在"期望尺寸"上下文生效，
+Fill 槽里被忽略），两者不能相乘。两条出路：
+
+- **用 `H2URelativeBox`**（默认，需要 Runtime 模块）：运行期按百分比算再夹一次，最准；
+- **`--runtime=native`**（纯原生）：保留夹紧后的 px 并居中，日志会告警。1280 下仍是 1240 宽
+  （浏览器是 1177.6），窄视口会略微溢出。
+
+也可以**改设计**避开它：要么只用百分比（宽屏会偏宽），要么用固定宽度居中（窄屏会溢出）——很多游戏的
+内容列本来就是固定宽度，这种情况下混合单位尺寸是多余的。
+
+### 实测（同一份 WBP，只换渲染分辨率；两帧口径）
+
+| 稿子 | 模式 | 1920×1080 | 1280×720 |
 |---|---|---|---|
-| 流体稿（流式改写版，responsive） | 1.21% | 1.62% | **2.72%** |
-| 定宽稿（exact） | 1.45% | 1.76% | 2.42% |
-| 对照：定宽稿用 responsive | 1.37% | 16.7% | 16.6% |
+| 流体稿（14-fluid-skyline） | responsive，含 `min()` | **1.48%** | **3.22%** |
+| 流体稿 | `--runtime=native`（无插件） | 1.48% | 10.08% |
+| 定宽稿 | exact | 1.45% | 2.42% |
+| 长文档型页（12-responsive） | responsive，纯原生 | 6.35% | 11.33%（见下） |
 
 流体稿那一行值得单看：面板 `width: 92%; max-width: 1240px`，在 1920 下渲染成
 `x=340 / w=1240`、在 1280 下自动变成 `x=51.2 / w=1177.6`，与浏览器逐值一致——
 **一次烘焙，两种分辨率都对**。
+
+12-responsive 的 1280 那个数不是布局问题：该页内容在 1280 下高约 1000px，超出 720 视口，浏览器
+只截可见部分，而 WBP 不会自己滚动。几何本身是逐值对的（`Cards` 992×616、`Zh` 430×66、
+`OverlayBar` 272/640/976/56）。要看这个页的真实保真度，得用 1920（6.35%）。
 
 ### 写法约定
 
@@ -247,13 +249,13 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 
 ### 这一块的已知限制
 
-- **首帧高度滞后**：`WrapBox` 与折行文本在"实际宽度 ≠ 设计宽度"时，第一帧按设计宽报高度，
-  第二帧收敛。这是 Slate 的结构决定的（子先算 desired、父在 arrange 时才给宽度，
-  `STextBlock::AutoWrapText` 的注释里也写了至少晚一帧）。运行时无感，但**截首帧图验收会看到偏矮**。
-- **设计期常量**：`WrapSize`/`DesignWrapWidth` 来自设计视口。要覆盖多个断点，需要按断点各烘一份
-  （`--aspects`，尚未实现），或者接受第二帧收敛。
+- **两帧收敛**：折行文本与 WrapBox 的行数/高度在第二帧才正确（引擎自身行为，见上）。运行时无感，
+  但**单帧截图验收会看到偏矮**——用 `Html2UMG.RenderFrames`（默认 2）。
+- **混合单位尺寸**：`min()/max()/clamp()` 里"百分比 + px"这一组合原生表达不了（见上）。
 - **半连续场景**：flex **行主轴**上的"百分比 + 夹子"（Fill 份额不等于父宽，再乘百分比会变成 41% of 41%）、
-  `vw/vh` 基准是视口而控件乘的是父分配、内容盒与 border 盒的 padding 差——这三类只做近似并向日志给出警告。
+  `vw/vh` 基准是视口而控件乘的是父分配、内容盒与 border 盒的 padding 差——这几类只做近似并向日志给出警告。
+- **长页不滚动**：内容高于视口时，浏览器只截可见区域，WBP 会继续往下画（需要自己包 `ScrollBox`，
+  或用 `--pin-flow` 钉高度）。
 
 ## 原生控件切图
 
@@ -327,6 +329,11 @@ python Resources\Tools\visual_audit.py browser.png umg.png --snapshot snap.json
 ```bat
 python Resources\Tools\run_acceptance.py --html design.html --blueprint /Game/UI/WBP_Screen
 ```
+
+**验收渲染跑几帧很重要。** 离屏渲染默认跑两趟布局（`Html2UMG.RenderFrames`，默认 2）：
+折行文本和 WrapBox 的行数/高度是引擎在**第二帧**才收敛的（见"运行时控件"一节），只跑一帧会
+系统性地把自动折行的文本量成一行。想复现单帧行为：`Html2UMG.RenderFrames 1`；想验证收敛：
+`Html2UMG.RenderFrames 3`，几何应与 2 帧逐值相同。
 
 导出资产真实值的命令：
 

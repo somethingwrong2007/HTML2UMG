@@ -150,6 +150,28 @@ bool FHtml2UMGFidelity::RenderWidgetToFolder(const FString& BlueprintPath, FVect
 	return RenderWidgetToFile(BlueprintPath, Size, OutPngFile, OutError);
 }
 
+/**
+ * How many times the widget is drawn before the pixels/geometry are captured.
+ *
+ * One draw is a single layout pass: desired size -> arrange -> paint. That is not what the widget
+ * does in a game. Slate expects two things to settle one frame late, and both are stock-engine
+ * behaviour, not plugin behaviour:
+ *
+ *   STextBlock paint: "we may have been arranged in a different box than what we were cached with,
+ *   which might update wrapping" -> it re-wraps at the allotted width during paint and calls
+ *   Invalidate(Layout) when the desired size changed (STextBlock.cpp, AutoWrapText path).
+ *   SWrapBox Tick: with bUseAllottedSize it writes the allotted width into PreferredSize, which is
+ *   declared with EInvalidateWidgetReason::Layout, so the next prepass recomputes the row count.
+ *
+ * So a single-draw capture systematically under-measures auto-wrapped text and auto-wrapped boxes.
+ * Two draws is the honest steady state; raise it to prove convergence (3 draws must equal 2).
+ */
+static TAutoConsoleVariable<int32> CVarHtml2UMGRenderFrames(
+	TEXT("Html2UMG.RenderFrames"),
+	2,
+	TEXT("Number of layout passes a fidelity render runs before capturing (default 2). 1 reproduces the old single-pass behaviour."),
+	ECVF_Default);
+
 bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector2D Size, const FString& OutPng, FString& OutError, const FString& OutGeometryJson)
 {
 	OutError.Reset();
@@ -261,8 +283,16 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 	// UWidget::GetCachedWidget() returns null. That is why an earlier version of the geometry dump
 	// reported 67 widgets but measured zero of them.
 	const TSharedRef<SWidget> SlateWidget = UserWidget->TakeWidget();
-	WidgetRenderer.DrawWidget(RenderTarget, SlateWidget, DrawSize, /*DeltaTime=*/ 0.0f, /*bDeferRenderTargetUpdate=*/ false);
+
+	// Draw more than once so the paint-time re-wrap (STextBlock) and the tick-time wrap width
+	// (SWrapBox) can invalidate layout and be measured again. See the cvar comment above.
+	const int32 DrawCount = FMath::Max(1, CVarHtml2UMGRenderFrames.GetValueOnGameThread());
+	for (int32 DrawIndex = 0; DrawIndex < DrawCount; ++DrawIndex)
+	{
+		WidgetRenderer.DrawWidget(RenderTarget, SlateWidget, DrawSize, /*DeltaTime=*/ 0.0f, /*bDeferRenderTargetUpdate=*/ false);
+	}
 	FlushRenderingCommands();
+	UE_LOG(LogHtml2UMG, Verbose, TEXT("Html2UMG fidelity: drew '%s' %d time(s) before capture."), *BlueprintPath, DrawCount);
 
 	// 4b) Optionally dump the geometry Slate just computed for every widget. This is the only
 	// honest source of "where did UMG actually put this": the importer's slot values are inputs,
