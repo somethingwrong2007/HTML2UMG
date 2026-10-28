@@ -108,6 +108,19 @@ private:
 
 	FString OutputRoot;
 
+	/**
+	 * Where THIS page's textures go: OutputRoot/<WBP name>.
+	 *
+	 * Importing several designs used to drop every texture into one flat folder, which makes a
+	 * project impossible to clean up: you cannot tell which bitmap belongs to which screen, and a
+	 * re-import cannot remove stale ones. One folder per widget blueprint keeps a page's assets
+	 * together and makes "delete this page" a folder delete.
+	 */
+	FString TextureRoot;
+
+	/** Fonts stay shared: the same face is reused by every page that asks for it. */
+	FString FontRoot;
+
 	/** "@tex_N" -> texture. */
 	TMap<FString, TObjectPtr<UTexture2D>> TextureCache;
 	/** family (lower-case) -> font family asset. */

@@ -159,6 +159,8 @@ FHtml2UMGAssetImport::FHtml2UMGAssetImport(const FH2ULayout& InLayout, const FH2
 	: Layout(InLayout)
 	, Options(InOptions)
 	, OutputRoot(NormalizeRoot(InOptions.AssetOutputRoot))
+	, TextureRoot(NormalizeRoot(InOptions.AssetOutputRoot) + TEXT("/") + Html2UMG::SanitizeWidgetName(FPackageName::GetShortName(Layout.BlueprintPath)))
+	, FontRoot(NormalizeRoot(InOptions.AssetOutputRoot) + TEXT("/Fonts"))
 {
 }
 
@@ -210,6 +212,14 @@ UObject* FHtml2UMGAssetImport::FindExistingAsset(const FString& PackagePath, con
 bool FHtml2UMGAssetImport::ImportAll(const FH2UMessageSink& Sink)
 {
 	ActiveSink = Sink;
+
+	// Say where this page's bitmaps land before importing: with several designs in one project the
+	// flat layout made it impossible to tell which texture belonged to which screen.
+	if (Layout.Textures.Num() > 0)
+	{
+		Message(Sink, TEXT("info"), FString::Printf(TEXT("assets: %d texture(s) -> %s (fonts -> %s)"),
+			Layout.Textures.Num(), *TextureRoot, *FontRoot));
+	}
 
 	// Textures first: widgets reference them while building.
 	for (const TPair<FString, FH2UAssetRef>& Pair : Layout.Textures)
@@ -333,7 +343,7 @@ UTexture2D* FHtml2UMGAssetImport::ImportTextureFile(const FString& Key, const FS
 	const FString AssetName = SourceHash.IsEmpty()
 		? BaseName
 		: FString::Printf(TEXT("%s_%s"), *BaseName, *SourceHash);
-	const FString PackageName = OutputRoot + TEXT("/") + AssetName;
+	const FString PackageName = TextureRoot + TEXT("/") + AssetName;
 
 	// Textures are always re-imported, never reused.
 	//
@@ -347,11 +357,11 @@ UTexture2D* FHtml2UMGAssetImport::ImportTextureFile(const FString& Key, const FS
 	// cheap and removes a whole class of "why does it look different the second time" reports.
 	//
 	// Update in place so an unrelated asset cannot keep an old name.
-	UTexture2D* ExistingTexture = Cast<UTexture2D>(FindExistingAsset(OutputRoot, AssetName));
+	UTexture2D* ExistingTexture = Cast<UTexture2D>(FindExistingAsset(TextureRoot, AssetName));
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = AbsFile;
-	Task->DestinationPath = OutputRoot;
+	Task->DestinationPath = TextureRoot;
 	Task->DestinationName = AssetName;
 	Task->bReplaceExisting = true;
 	// Settings are replaced as well. With bReplaceExistingSettings=false the importer keeps
@@ -497,7 +507,7 @@ bool FHtml2UMGAssetImport::AddTypeface(const FH2UAssetRef& Ref, const FString& C
 	const FString Family = Ref.Family.IsEmpty() ? FPaths::GetBaseFilename(AbsFile) : Ref.Family;
 	const FString FamilyKey = Family.ToLower();
 	const FString FamilyAssetName = MakeAssetName(Family);
-	const FString FamilyPackageName = OutputRoot + TEXT("/") + FamilyAssetName;
+	const FString FamilyPackageName = FontRoot + TEXT("/") + FamilyAssetName;
 
 	UFont* FamilyFont = nullptr;
 	bool bFamilyReused = false;
@@ -506,7 +516,7 @@ bool FHtml2UMGAssetImport::AddTypeface(const FH2UAssetRef& Ref, const FString& C
 		FamilyFont = *Cached;
 		bFamilyReused = true;
 	}
-	else if (UObject* Existing = FindExistingAsset(OutputRoot, FamilyAssetName))
+	else if (UObject* Existing = FindExistingAsset(FontRoot, FamilyAssetName))
 	{
 		FamilyFont = Cast<UFont>(Existing);
 		if (FamilyFont)
@@ -855,9 +865,9 @@ UObject* FHtml2UMGAssetImport::ImportFallbackFace(const FH2UFontFallback& Fallba
 
 UObject* FHtml2UMGAssetImport::ImportFontFaceAs(const FString& FaceAssetName, const FString& AbsFile, const FString& Context)
 {
-	const FString PackageName = OutputRoot + TEXT("/") + FaceAssetName;
+	const FString PackageName = FontRoot + TEXT("/") + FaceAssetName;
 
-	if (UObject* Existing = FindExistingAsset(OutputRoot, FaceAssetName))
+	if (UObject* Existing = FindExistingAsset(FontRoot, FaceAssetName))
 	{
 		if (Existing->IsA<UFontFace>() && IsAssetUpToDate(PackageName, AbsFile))
 		{
@@ -867,7 +877,7 @@ UObject* FHtml2UMGAssetImport::ImportFontFaceAs(const FString& FaceAssetName, co
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = AbsFile;
-	Task->DestinationPath = OutputRoot;
+	Task->DestinationPath = FontRoot;
 	Task->DestinationName = FaceAssetName;
 	Task->bReplaceExisting = true;
 	Task->bReplaceExistingSettings = false;

@@ -5,7 +5,29 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { pathToFileURL, fileURLToPath } = require('url');
+
+/**
+ * Readable stem for a baked file name.
+ *
+ * Texture files used to be named positionally (tex_0.png, tex_1.png). Two designs converted into one
+ * assets directory then overwrote each other's files, and the *first* design's json silently pointed
+ * at the second one's pixels - a wrong picture that looks exactly like a broken style mapping.
+ * A content hash in the name makes the file a function of the bytes, so a shared directory is safe
+ * and re-running a conversion can never repoint an existing json.
+ */
+function textureStem(raw) {
+  let text = String(raw === null || raw === undefined ? '' : raw);
+  // Labels look like "background-image on 'div#card'" / "img on 'div.hero'" / "inline svg #12":
+  // the selector is the part worth keeping.
+  const quoted = text.match(/'([^']+)'/);
+  if (quoted) text = quoted[1];
+  text = text.replace(/^inline svg #/, 'svg');
+  const tokens = text.toLowerCase().match(/[a-z0-9]+/g) || [];
+  const stem = tokens.slice(-2).join('_');
+  return stem ? stem.slice(0, 24) : 'img';
+}
 
 const IMAGE_EXT_BY_MIME = {
   'image/png': 'png',
@@ -747,23 +769,13 @@ class AssetRegistry {
       // SVG is not importable as a UMG texture; it must be rasterised upstream.
       this.warn(`asset: ${label} is an SVG but was not rasterised; register it manually`);
     }
-    const name = `tex_${this.textureCount}.${sniffed}`;
+    // Content-addressed: same bytes -> same file (deduped), different bytes -> different file
+    // (no collision when several pages share one assets directory).
+    const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 8);
+    const name = `tex_${textureStem(label)}_${hash}.${sniffed}`;
     this.textureCount += 1;
     const abs = path.join(this.outDir, name);
-    // Texture names are positional, so two designs converted into the SAME assets directory
-    // overwrite each other's files and the first one's JSON then points at the second one's
-    // pixels. That produced measurements that made no sense (the same page scoring 3.77% alone
-    // and 22% when converted next to another) until the directory was inspected.
     try {
-      if (!this.warnedSharedDir && fs.existsSync(abs)) {
-        const existing = fs.readFileSync(abs);
-        if (!existing.equals(buffer)) {
-          this.warnedSharedDir = true;
-          const where = this.outDir;
-          this.warn('asset: ' + where + ' already holds textures from another conversion; ' +
-            'positional names collide. Convert each page into its own --assets directory.');
-        }
-      }
       fs.writeFileSync(abs, buffer);
       this.written += 1;
     } catch (err) {
