@@ -96,6 +96,9 @@ namespace
 			if (Widget != nullptr)
 			{
 				RefreshBrushFieldsInStruct(Widget->GetClass(), Widget, 0);
+				// A style struct read from disk is inert until the widget re-synchronises its Slate
+				// side; PostEditChange is the editor's own "the data changed, rebuild me" signal.
+				Widget->PostEditChange();
 			}
 		});
 	}

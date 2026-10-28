@@ -1029,6 +1029,13 @@ namespace
 			if (Resolved)
 			{
 				OutBrush.SetResourceObject(Resolved);
+				// A brush built field-by-field keeps FSlateBrush's default ImageType (NoImage), and
+				// Slate then treats it as having no image data - widget styles that draw through
+				// SSlider/SImage check it, so a Slider bar or CheckBox image with a perfectly good
+				// texture painted nothing. Measured: same layout, same texture, tint-only brush draws
+				// (solid colour), textured brush draws 0 pixels until this is set. Border/Image draw
+				// paths do not consult it, which is why only control styles looked broken.
+				OutBrush.ImageType = ESlateBrushImageType::FullColor;
 			}
 			else
 			{
