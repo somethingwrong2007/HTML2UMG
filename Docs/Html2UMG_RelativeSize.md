@@ -1,5 +1,11 @@
 # Html2UMG 相对尺寸：把分段函数降维成一个盒子
 
+> **状态：`H2URelativeBox` 已删除**，插件现在没有任何 Runtime 模块。§1–§7 记录的降维思路和实测量
+> 仍然有效（其中 `relativeBoxPlan()` 还在用，它现在生成**原生三层嵌套**）；现行做法见 §8.2.1：
+> `CanvasPanel(比例锚) → ScaleBox(ScaleToFit, DownOnly) → SizeBox(夹紧px)`。
+> 外框宽度实测 1920=1240 / 1280=1177.6 / 2560=1240；像素差 1.89% / 10.31%
+> （旧版逐字重排为 1.48% / 3.22%）。下文凡写 `H2URelativeBox` 处，请按"原生三层嵌套"读。
+
 > 回应的问题：`width:min(1240px, 92vw)` / `clamp(320px, 50%, 900px)` / `width:92%; max-width:1240px`
 > 这类"分段函数"为什么不能靠 SizeBox 落，怎么降维成 `{percent, minPx, maxPx}`，
 > 降维后的 JSON 长什么样，以及哪一轴根本降不了。
@@ -12,7 +18,7 @@
 | CSS（在**列**容器里，宽=交叉轴） | `--layout=responsive` 产出 | 跨分辨率 |
 |---|---|---|
 | `width:60%` | **spacer row**：`HBox[spacer Fill .2][child Fill .6][spacer Fill .2]` | ✅ 连续（无需运行期控件） |
-| `width:92%; max-width:1240px` | **H2URelativeBox** `{WidthPercent:.92, MaxWidth:1240}` | ✅ 连续 |
+| `width:92%; max-width:1240px` | **CanvasPanel(0.04..0.96) + ScaleBox(DownOnly) + SizeBox(1240)** | ✅ 连续（低于夹子时整体缩放） |
 | `width:min(1240px, 92vw)` | 同上 `{WidthPercent:.92, MaxWidth:1240}` | ✅ 连续（vw 基准见 §7） |
 | `width:max(600px, 40%)` | `{WidthPercent:.40, MinWidth:600}` | ✅ 连续 |
 | `width:clamp(320px, 50%, 900px)` | `{WidthPercent:.50, MinWidth:320, MaxWidth:900}` | ✅ 连续 |

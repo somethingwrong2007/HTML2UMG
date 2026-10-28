@@ -32,10 +32,6 @@ const KNOWN_CLASSES = new Set([
   'PageSwitcher',
   // Added for the effects round: backdrop-filter maps onto UMG's BackgroundBlur.
   'BackgroundBlur',
-  // Project widget (/Script/Html2UMGRuntime.H2URelativeBox): a single-content panel that turns
-  // one percentage + a min/max clamp into a run-time size. Emitted by --layout=responsive only;
-  // see Docs/Html2UMG_RelativeSize.md.
-  'H2URelativeBox',
 ]);
 
 /** Slot class implied by the *parent* container. */
@@ -54,8 +50,6 @@ const SLOT_KEYS = {
   Button: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   Overlay: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   BackgroundBlur: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
-  // UH2URelativeBox is a UContentWidget (like Border): it takes the ordinary single-child slot.
-  H2URelativeBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   // A UWrapBox subclass: children carry the ordinary UWrapBoxSlot payload.
 };
 
@@ -68,14 +62,11 @@ const SLOT_CLASS = {
   // UBackgroundBlur is a UContentWidget with its own UBackgroundBlurSlot.
   BackgroundBlur: 'BackgroundBlurSlot',
   // Declared explicitly rather than relying on the `${parentClass}Slot` fallback, because the
-  // runtime class registers its slot as UH2URelativeBoxSlot.
-  H2URelativeBox: 'H2URelativeBoxSlot',
 };
 
 /** Widgets that can hold at most one child / no children at all. */
 const MAX_CHILDREN = {
   Border: 1, SizeBox: 1, ScaleBox: 1, ScrollBox: 1, Button: 1, RetainerBox: 1, SafeZone: 1, BackgroundBlur: 1,
-  H2URelativeBox: 1,
   TextBlock: 0, Image: 0, ProgressBar: 0, EditableTextBox: 0, ComboBoxString: 0, SpinBox: 0,
   CheckBox: 0, Slider: 0, Spacer: 0, Throbber: 0,
 };

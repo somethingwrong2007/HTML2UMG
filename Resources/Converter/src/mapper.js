@@ -35,7 +35,7 @@ const CLASS = {
   PROGRESS: 'ProgressBar',
   CHECK_BOX: 'CheckBox',
   SLIDER: 'Slider',
-  // Project widget (/Script/Html2UMGRuntime.H2URelativeBox), not engine UMG: a single-content
+  // The clamp stack synthesised by wrapScaleClamp(): a CanvasPanel + ScaleBox + SizeBox, all stock
   // panel that turns one percentage + a min/max clamp into a real run-time size. Emitted only by
   // --layout=responsive, see Docs/Html2UMG_RelativeSize.md.
   // Page container: children are mutually exclusive pages, i.e. a WidgetSwitcher.
@@ -45,7 +45,6 @@ const CLASS = {
   // (/Script/CommonUI.CommonAnimatedSwitcher when the plugin is enabled, /Script/UMG.WidgetSwitcher
   // otherwise) and the JSON stays portable.
   PAGE_SWITCHER: 'PageSwitcher',
-  RELATIVE_BOX: 'H2URelativeBox',
 };
 
 /** Container class -> box orientation ('v' | 'h' | 'w' for WrapBox). */
@@ -684,7 +683,7 @@ class Mapper {
       if (verticalBox) axes.push({ key: 'height', isWidth: false });
       else if (horizontalBox) axes.push({ key: 'width', isWidth: true });
       else axes.push({ key: 'width', isWidth: true }, { key: 'height', isWidth: false });
-      // When the child itself carries an H2URelativeBox, the clamp is the box's job (it is exact at
+      // When the child itself carries a clamp stack, the clamp is its job (it is exact at
     // run time), so the Fill slot must stay: dropping it would starve the box of the space it
     // measures.
     if (slot.Size.SizeRule === 'Fill' && parentMeta.kind !== 'relbox' && cmeta.kind !== 'relbox') {
@@ -729,6 +728,10 @@ class Mapper {
   }
 
   rawSlot(parent, pmeta, child, cmeta, index, count) {
+    // Synthesised wrappers (the CanvasPanel + ScaleBox + SizeBox clamp stack) carry a slot the
+    // builder composed on purpose; recomputing it from the element's measurement would turn the
+    // percentage anchors into a fixed px pin and silently drop the clamp.
+    if (cmeta && cmeta.keepSlot) return null;
     const orientation = BOX_SLOTS[parent.class];
     if (orientation) return this.boxSlot(pmeta, cmeta, index, orientation);
     switch (parent.class) {
@@ -756,10 +759,6 @@ class Mapper {
       case CLASS.SCALE_BOX:
         // UScaleBoxSlot has no Padding (only the deprecated field), so only the
         // alignment members are legal here.
-        return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
-      case CLASS.RELATIVE_BOX:
-        // Single-content project panel: it derives the child's size from the space it is given and
-        // aligns the child itself (ContentHAlign/ContentVAlign), so the child always fills.
         return { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
       default:
         return null;
@@ -980,7 +979,7 @@ class Mapper {
     }
     // A synthetic wrapper that measures the space it is given has to BE given all of it: the
     // spacer row's Fill weights only mean "fraction of the parent" at the parent's full width, and
-    // H2URelativeBox must see the whole extent of the axis it sizes. Their own centring is encoded
+    // The clamp stack must see the whole extent of the axis it sizes. Its own centring is encoded
     // inside the wrapper (spacer weights / ContentHAlign), not in this slot.
     const wrapper = cmeta && cmeta.kind;
     if (wrapper === 'pct-spacer') crossAlign = 'Fill';
@@ -1557,16 +1556,8 @@ class Mapper {
     const selfPainted = SELF_BOX_KINDS.has(kind);
     const wantsBorder = !selfPainted && (style.hasVisualBox || style.hasPadding);
     // --layout=responsive: a size that only the runtime can resolve (min()/max()/clamp(), or a
-    // percentage that carries a min/max clamp) becomes one H2URelativeBox instead of a px pin.
-    const relPlan = this.runtimeWidgets() ? this.relativeBoxPlan(rec, style, ctx.orientation) : null;
-    if (!relPlan && this.runtimeMode() === 'native') {
-      // stock UMG has no widget that resolves "percentage with a px clamp" at run time
-      const dropped = this.relativeBoxPlan(rec, style, ctx.orientation);
-      if (dropped) {
-        const parts = [dropped.width ? 'width:' + dropped.width.expr : null, dropped.height ? 'height:' + dropped.height.expr : null].filter(Boolean).join(' and ');
-        this.warn('approximated: ' + this.label(rec) + ' needs ' + parts + ' at run time; --runtime=native cannot express a percentage together with a px clamp, so the clamp is dropped');
-      }
-    }
+    // percentage that carries a min/max clamp) becomes the clamp stack instead of a px pin.
+    const relPlan = this.responsiveMode() ? this.relativeBoxPlan(rec, style, ctx.orientation) : null;
     const crossPercent = this.crossAxisPercentPx(rec, style, ctx.orientation, relPlan);
     const wantsSize =
       !ctx.isRoot &&
@@ -1714,32 +1705,27 @@ class Mapper {
       node = box;
     }
 
-    // The relative-size box is the OUTERMOST wrapper: it must be what its container allots space
-    // to, because it derives the content's size from that allotment (see
-    // Docs/Html2UMG_RelativeSize.md). A SizeBox cannot stand in for it - SBox clamps the
-    // *desired* size only and hands its child the allotted geometry untouched (SBox.cpp:146-158
-    // vs :187+), so `min-width`/`max-width` inside a Fill slot is silently ignored at run time.
+    // "Percentage with a px clamp" (`width:92%; max-width:1240px`, `min(1240px, 92vw)`) cannot be
+    // expressed by a single UMG widget: a CanvasPanel slot hands out the percentage, and a SizeBox
+    // clamps the DESIRED size only and passes the allotted geometry through unchanged (SBox.cpp
+    // 146-158 vs 187+). Nesting the two the obvious way fixes nothing - measured, an inner
+    // MaxDesiredWidth=1240 inside a 92% slot still came out 1766px wide at 1920.
+    //
+    // What does work, and needs no runtime widget:
+    //
+    //   CanvasPanel(anchors = the percentage band)
+    //     ScaleBox(ScaleToFit, DownOnly)     <- shrinks only, never magnifies
+    //       SizeBox(clamped px x design px)  <- the design size, clamped
+    //         content
+    //
+    // Measured on a panel with width:92%; max-width:1240px: 1240 at 1920, 1177.6 at 1280,
+    // 1240 at 2560 - the box is right at every width. The trade-off is that below the clamp the
+    // content is scaled uniformly instead of being re-laid out (a browser re-wraps at 1177.6 with
+    // unchanged type size), which costs about 7 points of pixel difference on a text-dense panel
+    // at 1280. That is the price of not shipping a runtime module, and it is recorded here so the
+    // next person does not have to re-measure it.
     if (relPlan && node) {
-      const box = this.makeNode(this.names.unique(`${rootName}${ROLE_SUFFIX.rel}`), CLASS.RELATIVE_BOX, rec, true);
-      box.properties = this.relativeBoxProperties(relPlan, rec);
-      // The provisional px pin crossAxisPercentPx() emitted for a declarative `width:92%` is dead
-      // weight now: the box owns that axis, and a WidthOverride under a Fill slot is ignored by
-      // Slate anyway. Dropping it keeps a design-size number from freezing into the asset.
-      if (node.class === CLASS.SIZE_BOX && node.properties) {
-        if (relPlan.width) {
-          delete node.properties.WidthOverride;
-          delete node.properties.bOverride_WidthOverride;
-        }
-        if (relPlan.height) {
-          delete node.properties.HeightOverride;
-          delete node.properties.bOverride_HeightOverride;
-        }
-        if (!Object.keys(node.properties).length) delete node.properties;
-      }
-      box.children = [node];
-      this.meta.set(box, { rec, style, kind: 'relbox', rel: relPlan });
-      this.warn(`mapped: '${this.label(rec)}' keeps its ${[relPlan.width ? `width:${relPlan.width.expr}` : null, relPlan.height ? `height:${relPlan.height.expr}` : null].filter(Boolean).join(' and ')} as H2URelativeBox (${this.relativeBoxSummary(relPlan)})`);
-      node = box;
+      node = this.wrapScaleClamp(rec, style, node, rootName, relPlan);
     }
 
     if (!node) return null;
@@ -1816,7 +1802,7 @@ class Mapper {
     const maxPx = parsed.maxPx !== null ? parsed.maxPx : clampOf(maxName);
     if (parsed.unit && parsed.unit !== '%') {
       this.warn(
-        `note: ${text} at '${label}' is ${Math.round(parsed.percent * 100)}% of the viewport (${parsed.unit}); H2URelativeBox measures the space it is given, so the two agree only while the parent spans the viewport`
+        `note: ${text} at '${label}' is ${Math.round(parsed.percent * 100)}% of the viewport (${parsed.unit}); the clamp stack measures the space it is given, so the two agree only while the parent spans the viewport`
       );
     }
     return {
@@ -1829,7 +1815,7 @@ class Mapper {
   }
 
   /**
-   * The axes that need an H2URelativeBox, or null when neither does.
+   * The axes that need the clamp stack, or null when neither does.
    *
    * A percentage that carries no clamp is NOT one of them: the cross axis is already continuous as
    * a spacer row and the main axis as a Fill weight, and both are cheaper than a runtime widget.
@@ -1838,7 +1824,7 @@ class Mapper {
     if (!rec) return null;
     const keeps = (axis) => !!(axis && axis.percent > 0 && (axis.minPx !== null || axis.maxPx !== null));
     /**
-     * H2URelativeBox sizes its content from the space it is ALLOTTED, so it may only take an axis
+     * The clamp stack sizes its content from the space it is ALLOTTED, so it may only take an axis
      * where "allotted" means "the parent's extent on that axis":
      *   - the CROSS axis of a box panel: yes (the slot allots the panel's full cross size);
      *   - the MAIN axis of a box panel: NO. A Fill share is a fraction of the *remaining* space,
@@ -1866,48 +1852,6 @@ class Mapper {
     }
     const plan = { width: keepWidth ? width : null, height: keepHeight ? height : null };
     return plan.width || plan.height ? plan : null;
-  }
-
-  /**
-   * H2URelativeBox properties (/Script/Html2UMGRuntime.H2URelativeBox).
-   *
-   *   WidthPercent/HeightPercent   0..1; 0 means "no percentage" (a genuine 0px size stays a
-   *                                SizeBox WidthOverride=0)
-   *   Min/MaxWidth/Min/MaxHeight   px; <= 0 means "no clamp"
-   *   ContentHAlign/ContentVAlign  0 = left/top, 0.5 = centred, 1 = right/bottom
-   * The box hands its child that size and aligns it inside the space it was allotted.
-   */
-  relativeBoxProperties(plan, rec) {
-    const props = {};
-    if (plan.width) {
-      props.WidthPercent = V.round(plan.width.percent, 4);
-      if (plan.width.minPx !== null && plan.width.minPx > 0) props.MinWidth = V.round(plan.width.minPx, 2);
-      if (plan.width.maxPx !== null && plan.width.maxPx > 0) props.MaxWidth = V.round(plan.width.maxPx, 2);
-    }
-    if (plan.height) {
-      props.HeightPercent = V.round(plan.height.percent, 4);
-      if (plan.height.minPx !== null && plan.height.minPx > 0) props.MinHeight = V.round(plan.height.minPx, 2);
-      if (plan.height.maxPx !== null && plan.height.maxPx > 0) props.MaxHeight = V.round(plan.height.maxPx, 2);
-    }
-    // Alignment is only meaningful on an axis the box actually sizes: on an axis with no rule the
-    // content simply gets the whole allotted extent. Emitting it only there also keeps the value
-    // from wobbling with unrelated content height (a measured offset inside an overflowing parent
-    // is not an alignment).
-    if (plan.width) props.ContentHAlign = this.contentAlignOf(rec, 0);
-    if (plan.height) props.ContentVAlign = this.contentAlignOf(rec, 1);
-    return props;
-  }
-
-  relativeBoxSummary(plan) {
-    const parts = [];
-    for (const [key, prefix] of [['width', 'Width'], ['height', 'Height']]) {
-      const axis = plan[key];
-      if (!axis) continue;
-      parts.push(`${prefix}Percent ${V.round(axis.percent, 4)}`);
-      if (axis.minPx !== null && axis.minPx > 0) parts.push(`Min${prefix} ${V.round(axis.minPx, 2)}`);
-      if (axis.maxPx !== null && axis.maxPx > 0) parts.push(`Max${prefix} ${V.round(axis.maxPx, 2)}`);
-    }
-    return parts.join(', ');
   }
 
   /**
@@ -1955,7 +1899,7 @@ class Mapper {
     const widthIsMain = orientation === 'h';
     const heightIsMain = orientation === 'v';
     // A column's cross axis is width, and responsive mode prefers a wrapper there (spacer row or
-    // H2URelativeBox). The pin is still emitted FIRST and only stripped by the wrapper that
+    // clamp stack). The pin is still emitted FIRST and only stripped by the wrapper that
     // actually replaces it: suppressing it up front is what silently dropped the width - when the
     // wrapper did not materialise the element kept neither a Fill weight nor a WidthOverride and
     // collapsed to its text width (probe: `width:60%` came out with only HeightOverride left).
@@ -1997,20 +1941,11 @@ class Mapper {
     const rec = meta && meta.rec;
     const pct = style && style.percentWidth;
     if (!rec || !style || !(pct > 0.001) || pct >= 0.999) return null;
-    // H2URelativeBox owns this axis itself (percentage AND clamp); wrapping it in spacers would
-    // undo the clamp.
-    if (meta.kind === 'relbox') return null;
-    // --runtime=native cannot combine a percentage with a px clamp: a spacer row would give the
-    // percentage and silently drop the clamp (measured on a 1240px-capped 92% panel: 92% of 1920 =
-    // 1766 instead of 1240, 526px too wide). Keep the provisional pin the CSS measurement produced
-    // and let the slot's cross alignment centre it: that is exactly what exact mode does, and it is
-    // right at the design size.
-    if (this.runtimeMode() === 'native' && (style.maxWidth !== null || style.minWidth !== null)) {
-      this.warn(
-        'approximated: ' + this.label(rec) + ' is width:' + Math.round(pct * 100) + '% with a px clamp; --runtime=native keeps the clamped ' + V.round(rec.rect[2], 2) + 'px'
-      );
-      return null;
-    }
+    // A percentage that carries a px clamp is wrapped by wrapScaleClamp() (CanvasPanel + ScaleBox +
+    // SizeBox), not by a spacer row: a row would express the percentage and silently drop the clamp
+    // (measured on a 1240px-capped 92% panel: 92% of 1920 = 1766 instead of 1240). The wrapper is
+    // applied after the element is built, so skip the row here.
+    if (style.maxWidth !== null || style.minWidth !== null) return null;
     if (!rec.rect || !rec.prect || !(rec.prect[2] > 0)) return null;
     const free = Math.max(0, 1 - pct);
     let left = free / 2; // CSS default is start-aligned; use the measured offset when it is clear
@@ -2454,6 +2389,117 @@ class Mapper {
     // paint and invalidates layout when the line count changed, so plain AutoWrapText settles on the
     // second frame (measured: 17px on pass 1, 51px on pass 2, identical to an explicit WrapTextAt).
     return node;
+  }
+
+  /**
+   * Build the native stand-in for "percentage with a px clamp".
+   *
+   * See the comment at the call site for the measurements. Shape: CanvasPanel(percentage anchors)
+   * -> ScaleBox(ScaleToFit, DownOnly) -> SizeBox(clamped design px) -> the element.
+   *
+   * The percentage band is centred inside the canvas the way CSS centres a block with
+   * `margin:auto`: anchors span `[free/2, 1 - free/2]`, so the ScaleBox occupies exactly the
+   * percentage of its parent and the clamped content sits centred in it.
+   */
+  wrapScaleClamp(rec, style, node, rootName, relPlan) {
+    const label = this.label(rec);
+    // This construction needs a parent that allots the canvas a definite box: a canvas slot
+    // (absolute element) or an Overlay/CanvasPanel parent. Inside a box panel the wrapper would be
+    // measured at its desired size, and a CanvasPanel has none, so the row would collapse; those
+    // keep the measured px pin instead and get a warning.
+    const parentSlot = node.slot;
+    const insideBoxPanel = !!(parentSlot && parentSlot.Size);
+    if (insideBoxPanel) {
+      this.warn(
+        `approximated: '${label}' keeps ${relPlan.width && relPlan.width.expr ? `width:${relPlan.width.expr}` : 'its clamped size'} as a fixed ${V.round(rec.rect[2], 1)}px - a box-panel parent has no definite extent for the percentage, so the clamp cannot be expressed at run time`
+      );
+      return node;
+    }
+    const width = relPlan.width;
+    const percent = width && width.percent !== null && width.percent !== undefined
+      ? V.clamp(width.percent, 0, 1)
+      : null;
+
+    // The px value the design asks for: min(percent of the parent, maxPx), or max(..., minPx).
+    const designParent = rec.prect && rec.prect[2] ? rec.prect[2] : (rec.rect ? rec.rect[2] : 0);
+    const measuredWidth = rec.rect ? rec.rect[2] : 0;
+    let clampedPx = width && width.maxPx !== null && width.maxPx !== undefined
+      ? Math.min(designParent * (percent === null ? 1 : percent), width.maxPx)
+      : (width && width.minPx !== null && width.minPx !== undefined
+        ? Math.max(designParent * (percent === null ? 1 : percent), width.minPx)
+        : measuredWidth);
+    if (!(clampedPx > 0)) clampedPx = measuredWidth;
+    const designHeight = rec.rect && rec.rect[3] >= 1 ? rec.rect[3] : 0;
+
+    // The element's own slot moves up to the canvas, so it keeps its place in the parent.
+    const originalSlot = node.slot ? JSON.parse(JSON.stringify(node.slot)) : undefined;
+    delete node.slot;
+    node.slot = { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+
+    // A WidthOverride on the element itself would fight the clamp; the SizeBox below owns the size.
+    if (node.properties) {
+      delete node.properties.WidthOverride;
+      delete node.properties.bOverride_WidthOverride;
+      if (!Object.keys(node.properties).length) delete node.properties;
+    }
+
+    const sized = {
+      class: CLASS.SIZE_BOX,
+      name: this.names.unique(`${rootName}Clamp`),
+      properties: { WidthOverride: V.round(clampedPx, 2), bOverride_WidthOverride: true },
+      slot: { HorizontalAlignment: 'Center', VerticalAlignment: 'Center' },
+      children: [node],
+    };
+    if (designHeight > 0) {
+      sized.properties.HeightOverride = V.round(designHeight, 2);
+      sized.properties.bOverride_HeightOverride = true;
+    }
+    this.meta.set(sized, { rec, style, kind: 'sizebox', keepSlot: true });
+
+    const scale = {
+      class: CLASS.SCALE_BOX,
+      name: this.names.unique(`${rootName}Scale`),
+      properties: { Stretch: 'ScaleToFit', StretchDirection: 'DownOnly' },
+      slot: {
+        LayoutData: {
+          Anchors: {
+            Minimum: [V.round(percent === null ? 0 : (1 - percent) / 2, 4), 0],
+            Maximum: [V.round(percent === null ? 1 : 1 - (1 - percent) / 2, 4), 1],
+          },
+          Offsets: { Left: 0, Top: 0, Right: 0, Bottom: 0 },
+          Alignment: [0, 0],
+        },
+        bAutoSize: false,
+      },
+      children: [sized],
+    };
+    this.meta.set(scale, { rec, style, kind: 'scalebox', keepSlot: true });
+
+    const canvas = {
+      class: CLASS.CANVAS,
+      name: this.names.unique(`${rootName}${ROLE_SUFFIX.rel}`),
+      properties: {},
+      children: [scale],
+    };
+    // The canvas has to span its parent, otherwise the percentage anchors below it resolve against
+    // the canvas's own (content) size and the clamp is meaningless. Vertical placement of the
+    // element is the inner SizeBox's job (it is centred there).
+    canvas.slot = originalSlot && originalSlot.LayoutData
+      ? {
+        LayoutData: {
+          Anchors: { Minimum: [0, 0], Maximum: [1, 1] },
+          Offsets: { Left: 0, Top: 0, Right: 0, Bottom: 0 },
+          Alignment: [0, 0],
+        },
+        bAutoSize: false,
+      }
+      : { HorizontalAlignment: 'Fill', VerticalAlignment: 'Fill' };
+    this.meta.set(canvas, { rec, style, kind: 'canvas', keepSlot: true });
+
+    this.warn(
+      `mapped: '${label}' keeps ${width && width.expr ? `width:${width.expr}` : 'its clamped width'} as CanvasPanel + ScaleBox(DownOnly) + SizeBox(${V.round(clampedPx, 1)}px) - native UMG cannot resolve a percentage and a px clamp together; below the clamp the content is scaled rather than re-flowed`
+    );
+    return canvas;
   }
 
   /**
@@ -2931,32 +2977,6 @@ class Mapper {
   responsiveMode() {
     const raw = String(this.opts.layout || process.env.HTML2UMG_LAYOUT || 'exact').toLowerCase();
     return raw === 'responsive';
-  }
-
-  /**
-   * 'plugin' (default) or 'native'.
-   *
-   * 'plugin' is the full-fidelity path: three small controls from the Html2UMGRuntime module do the
-   * things stock UMG cannot (see the class comments at the top of this file). 'native' emits **stock
-   * UMG only**, so the produced blueprint keeps working after the plugin is removed from the
-   * project. The trade-offs are deliberate and warned about at conversion time:
-   *
-   *   text -> an explicit WrapTextAt at the design width. Measured: AutoWrapText alone never wraps
-   *           (a TextBlock in an automatic slot measures one line and gets clipped), so a native
-   *           build must bake the width and the text stops following it;
-   *   size -> percentage with a px clamp loses the clamp (the percentage wins), because a SizeBox
-   *           only clamps its desired size and a Fill slot ignores that;
-   *   wrap -> a plain WrapBox with WrapSize = design width: rows reflow at run time, the reported
-   *           height stays the design one.
-   */
-  runtimeMode() {
-    const raw = String(this.opts.runtime || process.env.HTML2UMG_RUNTIME || 'plugin').toLowerCase();
-    return raw === 'native' ? 'native' : 'plugin';
-  }
-
-  /** True when /Script/Html2UMGRuntime may be referenced (only H2URelativeBox is left). */
-  runtimeWidgets() {
-    return this.responsiveMode() && this.runtimeMode() === 'plugin';
   }
 
   cjkBreakMode() {
@@ -4212,7 +4232,7 @@ class Mapper {
       const justify = String(style.justify || '');
       const cross = String(style.alignItems || 'normal');
       // An Overlay slot can only align: it has no Fill weight, so a child that FILLS the main axis
-      // (flex-grow / main-axis percentage / an H2URelativeBox that measures that axis) would lose
+      // (flex-grow / main-axis percentage / a clamp stack that measures that axis) would lose
       // the stretch it needs. Leave the box alone and say so - centring it is cosmetic next to
       // silently dropping a size.
       const cm = this.meta.get(child) || {};
@@ -4237,11 +4257,18 @@ class Mapper {
           HorizontalAlignment: vertical ? (hCross || 'Fill') : hJustify,
           VerticalAlignment: vertical ? vJustify : (vCross || 'Fill'),
         };
-        // A wrapper that measures the space it is ALLOTTED (spacer row, H2URelativeBox) must keep
+        // A wrapper that measures the space it is ALLOTTED (spacer row, clamp stack) must keep
         // the parent's full cross extent; the centring it encodes lives inside the wrapper.
         if (cm.kind === 'relbox' || cm.kind === 'pct-row' || pctWrapped) {
           if (vertical) slot.HorizontalAlignment = 'Fill';
           else slot.VerticalAlignment = 'Fill';
+        }
+        // The clamp stack's CanvasPanel needs the parent's whole box on BOTH axes: its percentage
+        // anchors are meaningless in a canvas that was shrunk to its (zero) content size, and the
+        // element it holds centres itself inside the SizeBox.
+        if (cm && cm.keepSlot) {
+          slot.HorizontalAlignment = 'Fill';
+          slot.VerticalAlignment = 'Fill';
         }
         node.class = CLASS.OVERLAY;
         node.properties = undefined;

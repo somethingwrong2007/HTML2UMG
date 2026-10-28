@@ -246,7 +246,7 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 | 单子项 `justify-content: center/end` | Overlay 槽（真居中，替代烘焙偏移） |
 | `flex-wrap: wrap` | WrapBox（`InnerSlotPadding` 是唯一间距来源，槽位 padding 归零） |
 | 折行文本 | `AutoWrapText`（原生，第二帧按真实宽度重排） |
-| `min(1240px, 92vw)` / `clamp()` | `H2URelativeBox`（百分比 + px 上下限，运行期算） |
+| `min(1240px, 92vw)` / `clamp()` | `CanvasPanel`（比例锚）+ `ScaleBox(ScaleToFit, DownOnly)` + `SizeBox`（夹紧后的 px）三层嵌套，纯原生 |
 
 `position: absolute` 的基准是**内边距盒**（CSS 规范），所以承载画布的容器会把
 `Border.Padding` 让给流式子项，让 CanvasPanel 正好落在内边距盒上——之前画布落在内容盒里，
@@ -273,34 +273,48 @@ UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器
 所以离线验收**必须跑两帧**（`Html2UMG.RenderFrames`，默认 2）。单帧截图会系统性地低估自动折行文本和
 换行盒——"文本不换行、WrapBox 高度不跟着变"的结论就是这样误判出来的。
 
-现在 Runtime 模块里**只剩 `H2URelativeBox`**（另外两个是删掉的：源码、类表、转换器分支一起清掉，
-不是留着不用），而且只有设计稿真的写了**混合单位尺寸**（`min(1240px, 92vw)`、`clamp()`）才会出现。
-纯百分比、纯 px、min/max 单独用、居中、换行、拉伸锚，全都用原生控件。
+**现在插件里没有任何 Runtime 模块**（`Source/Html2UMGRuntime` 已整体删除，uplugin 里也没有 Runtime
+条目）：转换出来的蓝图只用原生 UMG 控件，移除插件后照常工作。三个曾经的运行期控件全部消失了——
 
-删掉那两个之后同一份流体稿的实测没有变化（1920 = 1.48%、1280 = 3.22%），因为它们本来就不再被发出。
+| 曾经的控件 | 为什么不需要 |
+|---|---|
+| `H2UTextWrapBox` | `STextBlock::OnPaint` 自己按 allotted 宽度重排并 `Invalidate(Layout)`，第二帧收敛 |
+| `H2UWrapBox` | `SWrapBox::Tick` 把 allotted 宽写进 `PreferredSize`（`Layout` 失效），prepass 重算行数 |
+| `H2URelativeBox` | 改用 **CanvasPanel(比例锚) → ScaleBox(DownOnly) → SizeBox(px) → 内容** 三层嵌套，外框宽度在设计尺寸、1280、2560 上都对 |
 
-连这一个也不想要的话：走 `--layout=exact` 就是**零依赖**；流体稿用 `--runtime=native` 则退化为
-"保留夹紧后的 px + 居中"（日志会写明）。
 
 ### 混合单位尺寸这一件事
 
-`width: 92%; max-width: 1240px` 这种"百分比 + px 夹子"是 UMG 唯一表达不了的东西：百分比靠 Canvas 的
-比例锚点（会丢失上限），px 夹子靠 `SizeBox` 的 `MaxDesiredWidth`（只在"期望尺寸"上下文生效，
-Fill 槽里被忽略），两者不能相乘。两条出路：
+`width: 92%; max-width: 1240px` 这种"百分比 + px 夹子"**单个** UMG 控件表达不了：百分比靠 Canvas
+比例锚点（丢上限），px 夹子靠 `SizeBox.MaxDesiredWidth`（只夹"期望尺寸"，Fill 槽里被忽略）。实测：
+92% 槽里塞一个 `MaxDesiredWidth=1240` 的 SizeBox，1920 下仍然是 **1766px**，夹子完全没生效。
 
-- **用 `H2URelativeBox`**（默认，需要 Runtime 模块）：运行期按百分比算再夹一次，最准；
-- **`--runtime=native`**（纯原生）：保留夹紧后的 px 并居中，日志会告警。1280 下仍是 1240 宽
-  （浏览器是 1177.6），窄视口会略微溢出。
+**三层嵌套可以**（转换器自动生成，纯原生）：
 
-也可以**改设计**避开它：要么只用百分比（宽屏会偏宽），要么用固定宽度居中（窄屏会溢出）——很多游戏的
-内容列本来就是固定宽度，这种情况下混合单位尺寸是多余的。
+```
+CanvasPanel        锚点 0.04..0.96  ← 百分比
+  ScaleBox         ScaleToFit + DownOnly ← 只缩不放
+    SizeBox        WidthOverride=1240, HeightOverride=设计高 ← px 上限
+      内容
+```
+
+外框宽度实测：**1920 → 1240、1280 → 1177.6、2560 → 1240**，三个视口全中。
+
+代价要说清楚：低于夹子宽度时，内容是被**整体等比缩小**（1280 下 0.9497 倍），而浏览器是**按 1177.6
+重新排版**（字号不变）。所以像素差在 1920 是 1.89%，1280 是 10.31%（同一稿的"逐字重排"版本是
+1.48% / 3.22%）。这个差异只对文字密集、会因宽度改变换行的内容明显；被夹的如果是一张图或固定网格，
+两者像素一样。
+
+也可以**改设计**避开它：只用百分比（宽屏偏宽）或固定宽度居中（窄屏溢出）——很多游戏的内容列本来就是
+固定宽度，混合单位尺寸是多余的。
 
 ### 实测（同一份 WBP，只换渲染分辨率；两帧口径）
 
 | 稿子 | 模式 | 1920×1080 | 1280×720 |
 |---|---|---|---|
-| 流体稿（14-fluid-skyline） | responsive，含 `min()` | **1.48%** | **3.22%** |
-| 流体稿 | `--runtime=native`（无插件） | 1.48% | 10.08% |
+| 流体稿（14-fluid-skyline） | responsive，含 `min()`，**零 runtime 依赖（现行）** | **1.89%** | **10.31%** |
+| 流体稿 | 旧版 `H2URelativeBox`（已删除，作参照） | 1.48% | 3.22% |
+| 流体稿 | 旧版"固定+居中"降级（作参照） | 1.48% | 10.08% |
 | 定宽稿 | exact | 1.45% | 2.42% |
 | 长文档型页（12-responsive） | responsive，纯原生 | 6.35% | 11.33%（见下） |
 

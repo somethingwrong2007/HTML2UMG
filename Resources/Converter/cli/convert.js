@@ -234,10 +234,6 @@ async function main(argv) {
       const raw = String(opts.layout || process.env.HTML2UMG_LAYOUT || 'exact').toLowerCase();
       return raw === 'responsive' ? 'responsive' : 'exact';
     })(),
-    runtime: (() => {
-      const raw = String(opts.runtime || process.env.HTML2UMG_RUNTIME || 'plugin').toLowerCase();
-      return raw === 'native' ? 'native' : 'plugin';
-    })(),
   };
 
   let browser = null;
@@ -403,7 +399,6 @@ async function main(argv) {
         textShadow: opts.textShadow,
         lineBoxSnap: opts.lineBoxSnap,
         layout: effectiveSettings.layout,
-        runtime: effectiveSettings.runtime,
         fontMap: effectiveSettings.fontMap,
         wrapTolerance: opts.wrapTolerance,
         cjkBreaks: opts.cjkBreaks,

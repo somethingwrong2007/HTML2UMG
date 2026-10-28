@@ -313,10 +313,10 @@ UClass* FHtml2UMGWidgetBuilder::ResolveWidgetClass(const FString& ClassName, FSt
 		}
 	}
 
-	// 2. Short native name -> /Script/UMG.Name, then /Script/Html2UMGRuntime.Name (H2URelativeBox),
-	//    then /Script/Engine.Name. Plugin classes live in the Runtime module, so a bare
-	//    "H2URelativeBox" has to find them without the layout spelling out the script path.
-	static const TCHAR* Modules[] = { TEXT("UMG"), TEXT("Html2UMGRuntime"), TEXT("Engine") };
+	// 2. Short native name -> /Script/UMG.Name, then /Script/Engine.Name. The plugin ships no
+	//    runtime module any more: every widget a converted layout can name is stock UMG, so a bare
+	//    "SizeBox" resolves here and a project-only class still works through its full script path.
+	static const TCHAR* Modules[] = { TEXT("UMG"), TEXT("Engine") };
 	for (const TCHAR* Module : Modules)
 	{
 		const FString ScriptPath = FString::Printf(TEXT("/Script/%s.%s"), Module, *Trimmed);

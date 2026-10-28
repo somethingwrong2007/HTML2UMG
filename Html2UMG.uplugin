@@ -16,14 +16,6 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "Html2UMGRuntime",
-			"Type": "Runtime",
-			"LoadingPhase": "PreDefault",
-			"PlatformAllowList": [
-				"Win64"
-			]
-		},
-		{
 			"Name": "Html2UMG",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
