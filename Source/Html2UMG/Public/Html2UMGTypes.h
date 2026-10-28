@@ -127,6 +127,18 @@ struct HTML2UMG_API FH2UImportOptions
 	FString ParentClassPath;
 	/** Content root for imported textures/fonts, e.g. /Game/UI/Html2UMG. */
 	FString AssetOutputRoot = TEXT("/Game/Html2UMG");
+	/**
+	 * Give every imported page its own folder: /Game/X/WBP_Foo -> /Game/X/WBP_Foo/WBP_Foo.
+	 *
+	 * The page's textures then live in /Game/X/WBP_Foo/assets, so a page is one self-contained
+	 * folder: delete it and nothing of that page is left behind. Fonts stay shared
+	 * (AssetOutputRoot/Fonts) because the same face is reused by every page.
+	 */
+	bool bNestPageFolder = true;
+	/** Where font families go. Empty = AssetOutputRoot/Fonts. */
+	FString FontOutputRoot;
+	/** Delete bitmaps in <page>/assets that the layout no longer uses (they belong to this page). */
+	bool bPruneUnusedPageAssets = true;
 
 	bool bImportTextures = true;
 	bool bImportFonts = true;
@@ -167,4 +179,15 @@ namespace Html2UMG
 
 	/** Makes a set of names unique by appending _1, _2, ... */
 	HTML2UMG_API void MakeUniqueNames(TArray<FString>& Names);
+
+	/**
+	 * "/Game/UI/WBP_Foo" -> "/Game/UI/WBP_Foo/WBP_Foo" (idempotent).
+	 *
+	 * Every imported page gets its own folder so its textures can live next to it in
+	 * <folder>/assets: one page, one folder, delete it and nothing of that page is left behind.
+	 */
+	HTML2UMG_API FString NestPageFolder(const FString& PackagePath);
+
+	/** The page folder for a blueprint path: "<folder>/<name>" after NestPageFolder(). */
+	HTML2UMG_API FString PageFolderOf(const FString& PackagePath);
 }

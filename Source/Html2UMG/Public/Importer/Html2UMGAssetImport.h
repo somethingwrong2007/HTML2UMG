@@ -118,6 +118,9 @@ private:
 	 */
 	FString TextureRoot;
 
+	/** Deletes bitmaps left in TextureRoot that this layout does not use and nothing references. */
+	void PruneUnusedTextures(const FH2UMessageSink& Sink);
+
 	/** Fonts stay shared: the same face is reused by every page that asks for it. */
 	FString FontRoot;
 

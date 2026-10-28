@@ -217,7 +217,13 @@ bool FHtml2UMGImporter::ImportLayout(const FH2ULayout& Layout, const FH2UImportO
 		return false;
 	}
 
-	const FString BlueprintPath = NormalizeBlueprintPath(RequestedPath);
+	// One page, one folder: /Game/X/WBP_Foo becomes /Game/X/WBP_Foo/WBP_Foo, and the page's
+	// textures go into <that folder>/assets (see FHtml2UMGAssetImport::ResolveTextureRoot).
+	FString BlueprintPath = NormalizeBlueprintPath(RequestedPath);
+	if (Options.bNestPageFolder)
+	{
+		BlueprintPath = Html2UMG::NestPageFolder(BlueprintPath);
+	}
 	if (!FPackageName::IsValidLongPackageName(BlueprintPath))
 	{
 		Error(FString::Printf(TEXT("'%s' is not a valid content path (expected something like /Game/UI/WBP_Design)."), *BlueprintPath));

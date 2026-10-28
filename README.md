@@ -425,9 +425,34 @@ UnrealEditor.exe <工程>.uproject ^
 （`tex_0`、`tex_1`…），两个页面转进同一目录会静默覆盖、前一个页面的 JSON 指到后一个页面的像素——
 那会凭空制造出「改坏了」的假象。
 
-导入到工程里时，**贴图进 /Game/Html2UMG/<蓝图名>/**、字体进 **/Game/Html2UMG/Fonts/**，
-每次导入都会在日志里写明目标目录；改名或删图后不再被引用的旧资产可以用
-`Html2UMG.PruneAssets /Game/Html2UMG` 清掉（判据是资产注册表里**零引用**，不是猜测）。
+导入到工程里时，**一个页面一个文件夹**：
+
+```
+/Game/MenuSystem/Skyline/Components/
+  WBP_RowSlider/
+    WBP_RowSlider.uasset          蓝图本身
+    assets/                       这一页的贴图
+      tex_input_track_fb250cd6.uasset
+      tex_input_thumb_b5f74fdc.uasset
+/Game/Html2UMG/Fonts/             字体公共目录（同一字面被所有页面复用）
+```
+
+也就是说蓝图路径 `/Game/X/WBP_Foo` 会自动变成 `/Game/X/WBP_Foo/WBP_Foo`（可重复导入，
+不会叠第二层）。删一页 = 删一个文件夹，页面不再用的旧贴图会在下次导入时自动清掉
+（只在这个页面自己的 `assets/` 里动，判据是"本次布局没用到 + 零引用"）。
+
+日志会写明落点：
+
+```
+[info] assets: 2 texture(s) -> /Game/MenuSystem/Skyline/Components/WBP_RowSlider/assets (fonts -> /Game/Html2UMG/Fonts)
+```
+
+清理工具（都在编辑器控制台）：
+
+| 命令 | 作用 |
+|---|---|
+| `Html2UMG.PruneAssets /Game/Html2UMG` | 删掉该目录下**零引用**的资产（资产注册表判定，不会误删在用的） |
+| `Html2UMG.DeleteAsset /Game/UI/WBP_Old` | 明确删除指定资产（清理重复导入留下的旧副本） |
 
 剩下的误差主要来自文字（字形光栅化的差异）和少数几处细节，比如文本行盒在 CSS 和 Slate 里的定义不同、
 `SBackgroundBlur` 在离屏渲染里不出效果。

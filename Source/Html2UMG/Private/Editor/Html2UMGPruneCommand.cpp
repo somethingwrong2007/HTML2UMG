@@ -70,6 +70,61 @@ namespace
 			Names.Num() > 6 ? TEXT(", ...") : TEXT(""));
 	}
 
+	/**
+	 * Html2UMG.DeleteAsset <path> [<path> ...]
+	 *
+	 * Deletes the named assets outright.
+	 *
+	 * PruneAssets is the safe default, but it cannot remove a *duplicate*: when a page has been
+	 * imported twice under two paths, each copy is referenced by nothing, so the user still has to say
+	 * which one is the leftover. This is that "say it" command - no registry guesswork.
+	 */
+	void DeleteAssetCommand(const TArray<FString>& Args)
+	{
+		if (Args.Num() == 0)
+		{
+			UE_LOG(LogHtml2UMG, Warning, TEXT("Usage: Html2UMG.DeleteAsset <path> [<path> ...]"));
+			return;
+		}
+
+		TArray<UObject*> ToDelete;
+		TArray<FString> Missing;
+		for (const FString& Arg : Args)
+		{
+			FString Path = Arg.TrimStartAndEnd();
+			if (!Path.StartsWith(TEXT("/")))
+			{
+				Path = TEXT("/Game/") + Path;
+			}
+			UObject* Asset = LoadObject<UObject>(nullptr, *Path);
+			if (!Asset)
+			{
+				// Accept a package path without the object name: "/Game/UI/WBP_Foo" -> "...WBP_Foo".
+				const FString ShortName = FPackageName::GetShortName(Path);
+				Asset = LoadObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *Path, *ShortName));
+			}
+			if (Asset)
+			{
+				ToDelete.Add(Asset);
+			}
+			else
+			{
+				Missing.Add(Path);
+			}
+		}
+
+		if (ToDelete.Num() > 0)
+		{
+			const int32 Deleted = ObjectTools::DeleteObjectsUnchecked(ToDelete);
+			UE_LOG(LogHtml2UMG, Display, TEXT("Html2UMG.DeleteAsset: deleted %d asset(s)."), Deleted);
+		}
+		if (Missing.Num() > 0)
+		{
+			UE_LOG(LogHtml2UMG, Warning, TEXT("Html2UMG.DeleteAsset: could not load %s"),
+				*FString::Join(Missing, TEXT(", ")));
+		}
+	}
+
 	struct FPruneAssetsRegistration
 	{
 		FPruneAssetsRegistration()
@@ -78,6 +133,12 @@ namespace
 				TEXT("Html2UMG.PruneAssets"),
 				TEXT("Deletes assets under a folder that nothing references. Usage: Html2UMG.PruneAssets [/Game/Html2UMG]"),
 				FConsoleCommandWithArgsDelegate::CreateStatic(&PruneAssetsCommand),
+				ECVF_Default);
+
+			IConsoleManager::Get().RegisterConsoleCommand(
+				TEXT("Html2UMG.DeleteAsset"),
+				TEXT("Deletes the named assets. Usage: Html2UMG.DeleteAsset <path> [<path> ...]"),
+				FConsoleCommandWithArgsDelegate::CreateStatic(&DeleteAssetCommand),
 				ECVF_Default);
 		}
 	};

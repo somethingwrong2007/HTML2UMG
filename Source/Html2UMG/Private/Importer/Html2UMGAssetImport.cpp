@@ -153,14 +153,45 @@ namespace
 		}
 		return false;
 	}
+
+	/** The blueprint this import targets: the option wins over the layout's own field. */
+	FString RequestedBlueprintPath(const FH2ULayout& Layout, const FH2UImportOptions& Options)
+	{
+		return Options.BlueprintPath.IsEmpty() ? Layout.BlueprintPath : Options.BlueprintPath;
+	}
+
+	/**
+	 * <page folder>/assets: the page's bitmaps live *next to* the page, not in a global bin.
+	 *
+	 * With bNestPageFolder the page folder is /Game/X/WBP_Foo, so textures land in
+	 * /Game/X/WBP_Foo/assets and deleting the page folder deletes everything it owned.
+	 * Without nesting they still get a per-page folder under the asset root, never a flat root.
+	 */
+	FString ResolveTextureRoot(const FH2ULayout& Layout, const FH2UImportOptions& Options)
+	{
+		const FString Requested = RequestedBlueprintPath(Layout, Options);
+		if (Options.bNestPageFolder && Requested.StartsWith(TEXT("/")))
+		{
+			return Html2UMG::PageFolderOf(Requested) + TEXT("/assets");
+		}
+		const FString Name = Html2UMG::SanitizeWidgetName(FPackageName::GetShortName(Requested));
+		return NormalizeRoot(Options.AssetOutputRoot) + TEXT("/") + (Name.IsEmpty() ? FString(TEXT("Page")) : Name) + TEXT("/assets");
+	}
+
+	FString ResolveFontRoot(const FH2UImportOptions& Options)
+	{
+		return Options.FontOutputRoot.IsEmpty()
+			? NormalizeRoot(Options.AssetOutputRoot) + TEXT("/Fonts")
+			: NormalizeRoot(Options.FontOutputRoot);
+	}
 }
 
 FHtml2UMGAssetImport::FHtml2UMGAssetImport(const FH2ULayout& InLayout, const FH2UImportOptions& InOptions)
 	: Layout(InLayout)
 	, Options(InOptions)
 	, OutputRoot(NormalizeRoot(InOptions.AssetOutputRoot))
-	, TextureRoot(NormalizeRoot(InOptions.AssetOutputRoot) + TEXT("/") + Html2UMG::SanitizeWidgetName(FPackageName::GetShortName(Layout.BlueprintPath)))
-	, FontRoot(NormalizeRoot(InOptions.AssetOutputRoot) + TEXT("/Fonts"))
+	, TextureRoot(ResolveTextureRoot(InLayout, InOptions))
+	, FontRoot(ResolveFontRoot(InOptions))
 {
 }
 
@@ -232,6 +263,16 @@ bool FHtml2UMGAssetImport::ImportAll(const FH2UMessageSink& Sink)
 		EnsureTexture(Pair.Key, TEXT("asset import"));
 	}
 
+	// A page folder belongs to exactly one page, so anything left inside <page>/assets that this
+	// layout did not ask for is a bitmap from an earlier conversion of the same page (the CSS lost
+	// an image, or the bake changed). Leaving them makes the folder grow without bound and makes it
+	// impossible to tell which bitmap is live. Scoped to this page's own assets folder, and only for
+	// assets nothing references.
+	if (Options.bPruneUnusedPageAssets && Layout.Textures.Num() > 0)
+	{
+		PruneUnusedTextures(Sink);
+	}
+
 	// The converter also lists every fallback as a normal font entry so its key resolves. Importing
 	// those eagerly would create a UFont family asset per fallback family (a Chinese-only font asset
 	// nobody references); they are imported on demand instead, via Resolve("@key") in the widget build.
@@ -287,6 +328,53 @@ bool FHtml2UMGAssetImport::ImportAll(const FH2UMessageSink& Sink)
 	return !bHasErrors;
 }
 
+void FHtml2UMGAssetImport::PruneUnusedTextures(const FH2UMessageSink& Sink)
+{
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> Existing;
+	AssetRegistry.GetAssetsByPath(FName(*TextureRoot), Existing, /*bRecursive=*/false);
+
+	TSet<FName> Keep;
+	for (const TPair<FString, TObjectPtr<UTexture2D>>& Pair : TextureCache)
+	{
+		if (Pair.Value)
+		{
+			Keep.Add(Pair.Value->GetOutermost()->GetFName());
+		}
+	}
+
+	TArray<UObject*> ToDelete;
+	TArray<FString> Names;
+	for (const FAssetData& Asset : Existing)
+	{
+		if (Keep.Contains(Asset.PackageName))
+		{
+			continue;
+		}
+		TArray<FName> Referencers;
+		AssetRegistry.GetReferencers(Asset.PackageName, Referencers);
+		if (Referencers.Num() > 0)
+		{
+			continue;
+		}
+		if (UObject* Loaded = Asset.GetAsset())
+		{
+			ToDelete.Add(Loaded);
+			Names.Add(Asset.AssetName.ToString());
+		}
+	}
+
+	if (ToDelete.Num() > 0)
+	{
+		const int32 Deleted = ObjectTools::DeleteObjectsUnchecked(ToDelete);
+		Message(Sink, TEXT("info"), FString::Printf(
+			TEXT("assets: %d unused bitmap(s) deleted from %s (%s)"), Deleted, *TextureRoot, *FString::Join(Names, TEXT(", "))));
+	}
+}
+
 UTexture2D* FHtml2UMGAssetImport::EnsureTexture(const FString& Key, const FString& Context)
 {
 	if (const TObjectPtr<UTexture2D>* Cached = TextureCache.Find(Key))
@@ -340,7 +428,26 @@ UTexture2D* FHtml2UMGAssetImport::ImportTextureFile(const FString& Key, const FS
 	// mtime-based reuse below becomes safe.
 	const FString SourceHash = HashSourceFile(AbsFile);
 	const FString BaseName = MakeAssetName(FPaths::GetBaseFilename(AbsFile));
-	const FString AssetName = SourceHash.IsEmpty()
+
+	// The converter already puts a content hash in the baked file name (tex_div_card_af5758db), so
+	// appending ours as well would produce tex_div_card_af5758db_41c043c5: the same information
+	// twice, and a name every reference has to be read twice to parse.
+	bool bAlreadyContentAddressed = false;
+	if (BaseName.Len() > 9 && BaseName[BaseName.Len() - 9] == TEXT('_'))
+	{
+		bAlreadyContentAddressed = true;
+		for (int32 Index = BaseName.Len() - 8; Index < BaseName.Len(); ++Index)
+		{
+			const TCHAR Char = BaseName[Index];
+			if (!FChar::IsDigit(Char) && (Char < TEXT('a') || Char > TEXT('f')))
+			{
+				bAlreadyContentAddressed = false;
+				break;
+			}
+		}
+	}
+
+	const FString AssetName = (SourceHash.IsEmpty() || bAlreadyContentAddressed)
 		? BaseName
 		: FString::Printf(TEXT("%s_%s"), *BaseName, *SourceHash);
 	const FString PackageName = TextureRoot + TEXT("/") + AssetName;

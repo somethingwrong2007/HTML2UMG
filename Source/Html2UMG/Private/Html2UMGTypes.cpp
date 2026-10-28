@@ -115,6 +115,46 @@ namespace Html2UMG
 			Used.Add(Name);
 		}
 	}
+
+	FString NestPageFolder(const FString& InPackagePath)
+	{
+		FString Path = InPackagePath.TrimStartAndEnd();
+		if (!Path.StartsWith(TEXT("/")))
+		{
+			return Path;
+		}
+
+		// Drop an object or subobject suffix: "/Game/UI/WBP_Foo.WBP_Foo_C" -> "/Game/UI/WBP_Foo".
+		int32 DotIndex = INDEX_NONE;
+		if (Path.FindChar(TEXT('.'), DotIndex))
+		{
+			Path = Path.Left(DotIndex);
+		}
+
+		const FString Name = FPackageName::GetShortName(Path);
+		const FString Folder = FPackageName::GetLongPackagePath(Path);
+		if (Name.IsEmpty() || Folder.IsEmpty() || Folder == TEXT("/Game"))
+		{
+			// "/Game/WBP_Foo" still nests; only a bare "/Game" has nowhere to go.
+			if (Name.IsEmpty())
+			{
+				return Path;
+			}
+		}
+
+		const FString PageFolder = Folder + TEXT("/") + Name;
+		if (Folder.EndsWith(TEXT("/") + Name) || Folder.EndsWith(Name))
+		{
+			// Already nested (re-running an import must not add a second level).
+			return Path;
+		}
+		return PageFolder + TEXT("/") + Name;
+	}
+
+	FString PageFolderOf(const FString& InPackagePath)
+	{
+		return FPackageName::GetLongPackagePath(NestPageFolder(InPackagePath));
+	}
 }
 
 namespace
