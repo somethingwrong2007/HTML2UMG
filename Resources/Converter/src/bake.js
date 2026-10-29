@@ -215,25 +215,32 @@ function applyRoundedMask(image, radii, scale) {
     for (let x = 0; x < w; x += 1) {
       const cx = x + 0.5;
       const cy = y + 0.5;
+      // Each corner owns a quarter-circle centred on its own inset. The previous version tested the
+      // BOTTOM-LEFT against the right edge (cx > w - r[3]), so that corner never matched and kept
+      // the page background: a checked switch baked 68x36 came out opaque white at (0,35) while its
+      // other three corners were transparent, and UMG drew the texture with a white square corner.
       let radius = 0;
       let centerX = 0;
       let centerY = 0;
-      const right = cx > w - r[1] && r[1] > 0;
-      const bottom = cy > h - r[2] && r[2] > 0;
-      if (cx < r[0] && cy < r[0] && r[0] > 0) {
+      if (r[0] > 0 && cx < r[0] && cy < r[0]) {
         radius = r[0]; centerX = r[0]; centerY = r[0];
-      } else if (right && cy < r[1]) {
+      } else if (r[1] > 0 && cx > w - r[1] && cy < r[1]) {
         radius = r[1]; centerX = w - r[1]; centerY = r[1];
-      } else if (cx > w - r[3] && r[3] > 0 && cy > h - r[3]) {
-        radius = r[3]; centerX = w - r[3]; centerY = h - r[3];
-      } else if (right && bottom) {
+      } else if (r[2] > 0 && cx > w - r[2] && cy > h - r[2]) {
         radius = r[2]; centerX = w - r[2]; centerY = h - r[2];
+      } else if (r[3] > 0 && cx < r[3] && cy > h - r[3]) {
+        radius = r[3]; centerX = r[3]; centerY = h - r[3];
       }
       if (!radius) continue;
-      const dx = cx - centerX;
-      const dy = cy - centerY;
-      if (dx * dx + dy * dy > radius * radius) {
+      const dist = Math.hypot(cx - centerX, cy - centerY);
+      // One pixel of feather. These textures are baked at 2x and drawn at half size, so a hard
+      // threshold would show as a stair-stepped corner once the GPU samples it back down.
+      const coverage = radius - dist;
+      if (coverage <= 0) {
         out[(y * w + x) * 4 + 3] = 0;
+      } else if (coverage < 1) {
+        const alpha = (y * w + x) * 4 + 3;
+        out[alpha] = Math.round(out[alpha] * coverage);
       }
     }
   }
