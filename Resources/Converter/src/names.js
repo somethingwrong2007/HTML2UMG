@@ -77,15 +77,44 @@ function sanitize(raw) {
 }
 
 /**
+ * Keep a name exactly as authored, only replacing characters UE cannot hold.
+ *
+ * `method: 'verbatim'` exists because a UMG widget name is a CONTRACT: the blueprint graph binds
+ * `BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3` and exposes variables named `TextBlock_Switch`,
+ * so turning `Button_Left` into `ButtonLeft` silently breaks every copied binding. Underscores are a
+ * legal character in a UObject name, and the C++ sanitiser already keeps them
+ * (Html2UMGTypes.cpp: FChar::IsAlnum(Char) || Char == '_'), so nothing else has to change.
+ *
+ * Unlike sanitize() this does not collapse or trim underscores - `Text__Title` was authored that way
+ * and the graph may bind it that way.
+ */
+function sanitizeVerbatim(raw) {
+  let s = String(raw === null || raw === undefined ? '' : raw).replace(LEGAL_RE, '_');
+  if (!s) return '';
+  if (/^[0-9]/.test(s)) s = 'W' + s;
+  return s;
+}
+
+/** True when the element asked for its name to be kept exactly (`data-ue-name-verbatim`). */
+function wantsVerbatim(ue, options) {
+  if (ue && Object.prototype.hasOwnProperty.call(ue, 'name-verbatim')) {
+    const raw = String(ue['name-verbatim']).trim().toLowerCase();
+    // A bare attribute arrives as "" and means "yes".
+    return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
+  }
+  return !!(options && options.verbatim);
+}
+
+/**
  * Derive a base name from a snapshot record, honouring the documented priority
  * chain and the data-ue-name override.
  */
-function baseName(rec) {
+function baseName(rec, options) {
   // The snapshot stores control attributes in `ue`; `dataUe` is accepted too so
   // callers can hand-hand a record without knowing the wire format.
   const ue = rec.ue || rec.dataUe || {};
   if (ue.name) {
-    const n = toIdentifier(ue.name);
+    const n = wantsVerbatim(ue, options) ? sanitizeVerbatim(ue.name) : toIdentifier(ue.name);
     if (n) return n;
   }
   if (rec.id) {
@@ -189,4 +218,4 @@ function defaultBlueprintName(inputPath) {
   return `/Game/UI/WBP_${id}`;
 }
 
-module.exports = { toIdentifier, sanitize, baseName, NameRegistry, defaultBlueprintName, isStateClass, ROLE_SUFFIX };
+module.exports = { toIdentifier, sanitize, sanitizeVerbatim, wantsVerbatim, baseName, NameRegistry, defaultBlueprintName, isStateClass, ROLE_SUFFIX };

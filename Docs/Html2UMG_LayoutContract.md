@@ -274,6 +274,30 @@ Slate 的 `FSlateBrush` 只有**一圈** outline，做不了四边不同。转�
 
 ---
 
+
+### 逐字命名：`data-ue-name-verbatim` / `--name-verbatim`
+
+自动命名会把 `data-ue-name` 做 PascalCase（`Button_Left` → `ButtonLeft`），因为那是给人看的。
+但**控件名是契约**：蓝图图表绑定的是 `BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3`，
+变量叫 `TextBlock_Switch`——名字一变，把旧图表复制过来就全断。
+
+需要保住名字时加 `data-ue-name-verbatim`（`data-ue-name` 仍写名字）：
+
+```html
+<div class="btn" data-ue-name="Button_Left" data-ue-name-verbatim>左</div>
+```
+
+- 整页迁移用全局开关 `--name-verbatim`，不必逐元素写；个别元素想回退成 PascalCase：
+  `data-ue-name-verbatim="false"`；
+- 只替换 UE 装不下的字符（`[^A-Za-z0-9_]` → `_`），**下划线原样保留**，不折叠、不去尾；
+  C++ 侧 `SanitizeWidgetName` 本来就保留下划线，所以只有转换器这一处需要改；
+- 首字符是数字时补 `W` 前缀（UObject 名要求）；
+- **重名会报 error 级警告**：UMG 名字必须唯一，第二个会变成 `Button_Left_1`——那同样会断绑定，
+  所以必须让它显眼，而不是静默改名；
+- 角色后缀（`_Box`/`_BG`/`_Text`…）不受影响：它们是新增的包装控件，本来就该有新名字。
+
+验收页 `test/20-verbatim-names.html`：同一页里四个元素，两个 verbatim、一个默认、一个显式回退。
+
 ## 10. 复用已经导入好的控件
 
 一个页面里，同一块 UI（卡片、状态条、按钮组）往往在多个页面重复出现。

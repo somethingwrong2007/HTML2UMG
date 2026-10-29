@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>20 — verbatim 命名（保住蓝图绑定）</title>
+<style>
+  html,body{margin:0;padding:0;width:600px;height:200px;background:#101820;font-family:"Noto Sans SC",sans-serif;color:#E8EEF4}
+  #row{display:flex;gap:16px;padding:24px}
+  .btn{width:120px;height:36px;background:#0067C0;border-radius:8px;color:#fff;font-size:13px;line-height:36px;text-align:center}
+  .lbl{width:200px;height:24px;font-size:13px;line-height:24px}
+</style></head>
+<body data-ue-blueprint="/Game/UI/Html2UMG/Demo/WBP_VerbatimNames">
+  <!--
+    data-ue-name-verbatim 让这个控件的名字逐字保留（含下划线），用于把设计重导入到一个
+    已经绑好图表的蓝图里：BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3 和变量
+    TextBlock_Switch 只有名字不变才连得上。不给这个属性的元素仍然走 PascalCase。
+  -->
+  <div id="row">
+    <div class="btn" data-ue-name="Button_Left" data-ue-name-verbatim>左</div>
+    <div class="btn" data-ue-name="Button_Right" data-ue-name-verbatim>右</div>
+    <div class="lbl" data-ue-name="TextBlock_Switch" data-ue-name-verbatim>verbatim：Button_Left / TextBlock_Switch</div>
+    <div class="lbl" data-ue-name="TextBlock_Auto">默认：PascalCase -> TextBlockAuto</div>
+  </div>
+</body></html>

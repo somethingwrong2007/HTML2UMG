@@ -237,6 +237,17 @@ approximated: CSS motion is not converted - 2 rule(s) with transition (.tab, .bt
 
 需要绑定的控件建议直接写 `data-ue-name`：那是 `BindWidget` 的匹配键，改名等于改契约。
 
+**要把设计重导入到已有图表的蓝图里**（事件和变量已经绑好），加 `data-ue-name-verbatim`
+或整页传 `--name-verbatim`，名字就逐字保留（含下划线）：
+
+```html
+<div data-ue-name="Button_Left" data-ue-name-verbatim>…</div>
+```
+
+这样 `BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3` 和变量 `TextBlock_Switch` 才连得上；
+不加则仍是 PascalCase（`ButtonLeft`）。verbatim 重名会打 **error 级警告**（第二个被改成
+`Button_Left_1`，那同样会断绑定，所以必须显眼）。验收页 `test/20-verbatim-names.html`。
+
 ## 响应式：一份 WBP 适配多种尺寸
 
 UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器也分成两种模式：

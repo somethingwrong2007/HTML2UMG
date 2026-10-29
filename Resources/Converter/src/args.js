@@ -46,6 +46,11 @@ Options:
                             flex widths kept, single-child centre becomes an Overlay.
                             Output is stock UMG only - the plugin ships no runtime module, so a
                             converted blueprint keeps working after the plugin is removed.
+  --name-verbatim           Keep every data-ue-name exactly as written (underscores included)
+                            instead of PascalCasing it. Use when re-importing into a blueprint whose
+                            graph is already bound to those names: BndEvt__..._Button_Left_... and
+                            variables named TextBlock_Switch survive only if the names do not change.
+                            Per element: data-ue-name-verbatim (and ="false" to opt back out).
   --components <file.json>  Component registry: CSS compound selectors -> widget blueprint paths.
                             Matching elements are emitted as instances of the registered WBP
                             instead of being expanded inline. Shape:
@@ -237,6 +242,8 @@ function parseArgs(argv) {
         throw new ArgError('--layout: expected exact|responsive, got "' + mode + '"');
       }
       opts.layout = mode;
+    } else if (arg === '--name-verbatim') {
+      opts.nameVerbatim = true;
     } else if (arg === '--components' || arg.startsWith('--components=')) {
       const inline = arg.startsWith('--components=') ? arg.slice('--components='.length) : null;
       opts.components = inline === null ? takeValue() : inline;

@@ -416,6 +416,9 @@ async function main(argv) {
         // Selector -> widget blueprint registry (see --components). The mapper claims matching
         // elements as instances of an already imported WBP instead of expanding them inline.
         components: componentRegistry,
+        // --name-verbatim: keep data-ue-name exactly as authored, so a graph copied from the previous
+        // import still binds its events and variables. Per element: data-ue-name-verbatim.
+        nameVerbatim: opts.nameVerbatim === true,
         wrapTolerance: opts.wrapTolerance,
         cjkBreaks: opts.cjkBreaks,
       },

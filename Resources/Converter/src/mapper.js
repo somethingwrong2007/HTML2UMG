@@ -7,7 +7,7 @@
 const path = require('path');
 const V = require('./values');
 const fontmetrics = require('./fontmetrics');
-const { baseName, NameRegistry, ROLE_SUFFIX } = require('./names');
+const { baseName, wantsVerbatim, NameRegistry, ROLE_SUFFIX } = require('./names');
 
 /** UMG class names emitted by the converter. */
 const CLASS = {
@@ -1550,6 +1550,25 @@ class Mapper {
    * The element's own name always lands on the outermost widget, because that is
    * the widget a BindWidget property on the base class will match.
    */
+  /**
+   * The element's own widget name, honouring `data-ue-name-verbatim` (or the global --name-verbatim).
+   *
+   * A verbatim name that collides is the one case worth shouting about: UMG names must be unique, so
+   * the second one silently becomes `Button_Left_1` - and the copied blueprint graph still binds
+   * `Button_Left`, i.e. the binding breaks exactly the way the whole feature exists to prevent.
+   */
+  rootNameFor(rec, ctx) {
+    const verbatim = wantsVerbatim(rec.ue || rec.dataUe || {}, { verbatim: this.opts.nameVerbatim === true });
+    const base = ctx.forceName || baseName(rec, { verbatim });
+    const finalName = this.names.unique(base);
+    if (verbatim && finalName !== base) {
+      this.warn(
+        `error: duplicate widget name '${base}' (verbatim); the second one became '${finalName}' - any blueprint binding or variable referring to '${base}' will not match it`
+      );
+    }
+    return finalName;
+  }
+
   buildElement(rec, style, ctx) {
     const ue = rec.ue || {};
 
@@ -1574,7 +1593,7 @@ class Mapper {
       }
     }
     if (widgetPath) {
-      return this.buildWidgetInstance(rec, style, ctx, this.names.unique(ctx.forceName || baseName(rec)), widgetPath);
+      return this.buildWidgetInstance(rec, style, ctx, this.rootNameFor(rec, ctx), widgetPath);
     }
     if (ue.component) {
       this.warn(
@@ -1610,7 +1629,7 @@ class Mapper {
     // designer would actually bind (border, scroll box or the content widget);
     // only the pure SizeBox wrapper is demoted to a `_Box` suffix.
     // rootName is the element's OWN base: children never derive their name from it.
-    const rootName = this.names.unique(ctx.forceName || baseName(rec));
+    const rootName = this.rootNameFor(rec, ctx);
     const plan = [];
     if (wantsSize) plan.push('size');
     if (wantsBorder) plan.push('border');
@@ -2059,7 +2078,7 @@ class Mapper {
   buildNamedSlot(rec, style, ctx, slotName) {
     if (!slotName) {
       this.warn(`error: data-ue-named-slot on '${this.label(rec)}' is empty; the element is expanded as a plain container`);
-      return this.buildContainer(rec, style, 'container', ctx, this.names.unique(ctx.forceName || baseName(rec)), null);
+      return this.buildContainer(rec, style, 'container', ctx, this.rootNameFor(rec, ctx), null);
     }
     // A slot is an interface, not a label: keep the author's name verbatim even if a decorative
     // widget already took it (see NameRegistry.claim).

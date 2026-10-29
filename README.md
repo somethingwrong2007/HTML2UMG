@@ -262,6 +262,19 @@ bad:  SettingsPanel_Size_PctWrap_Content_Text   (what old versions produced)
 For anything you need to bind, set `data-ue-name` explicitly: that is the `BindWidget` key, so
 renaming is a contract change.
 
+**Re-importing into a blueprint that already has a graph** (events and variables already bound) needs
+names kept verbatim: add `data-ue-name-verbatim` on the element, or pass `--name-verbatim` for the
+whole page.
+
+```html
+<div data-ue-name="Button_Left" data-ue-name-verbatim>…</div>
+```
+
+Only then do `BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3` and a variable named
+`TextBlock_Switch` survive; without it the name is PascalCased to `ButtonLeft`. A duplicate verbatim
+name raises an error-level warning (the second becomes `Button_Left_1`, which breaks the binding just
+as badly, so it must be loud). Acceptance page: `test/20-verbatim-names.html`.
+
 ## Responsive: one WBP for many sizes
 
 UMG has no flexbox, so "matches the browser" has two meanings and the converter has two modes:
