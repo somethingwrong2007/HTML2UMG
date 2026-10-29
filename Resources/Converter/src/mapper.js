@@ -31,6 +31,9 @@ const CLASS = {
   // FSpinBoxStyle, so the browser's UA spinner needs no baking; only the range, font, colour and
   // padding are taken from the design.
   SPIN_BOX: 'SpinBox',
+  // UNamedSlot, authored with data-ue-named-slot="Body" inside a component page. Its own widget
+  // name IS the slot name, which is what data-ue-slot on the consuming page matches against.
+  NAMED_SLOT: 'NamedSlot',
   COMBO: 'ComboBoxString',
   PROGRESS: 'ProgressBar',
   CHECK_BOX: 'CheckBox',
@@ -135,6 +138,22 @@ class Mapper {
     this._warned = new Set();
     this.byIndex = new Map();
     for (const rec of this.snapshot.elements) this.byIndex.set(rec.i, rec);
+    // Named slots get their name BEFORE anything else can take it.
+    //
+    // UMG widget names are subobject names under the WidgetTree, so two widgets called "Body" cannot
+    // coexist - NewObject fails with "Cannot replace existing object of a different class" and the
+    // editor dies. A decorative div called #body would claim "Body" first, so reserve every slot name
+    // up front and let the ornament take "Body_1" instead. The slot's name is a public interface
+    // (`data-ue-slot="Body"` on a consuming page); a border's name is not.
+    for (const rec of this.snapshot.elements) {
+      const slotName = rec && rec.ue ? rec.ue['named-slot'] : null;
+      if (!slotName) continue;
+      const clean = String(slotName).trim();
+      if (!clean) continue;
+      this._slotNames = this._slotNames || new Set();
+      this._slotNames.add(clean);
+      this.names.claim(clean);
+    }
     this.meta = new Map();
     // node -> the element's OWN assigned name. Every role-suffixed companion is named
     // "<own base><role>" (never a parent's composed name), so this map is what keeps a
@@ -1532,16 +1551,34 @@ class Mapper {
    * the widget a BindWidget property on the base class will match.
    */
   buildElement(rec, style, ctx) {
-    // Reuse of an already imported widget (contract §10): the element becomes one
-    // instance node, its subtree is not expanded.
     const ue = rec.ue || {};
-    const widgetPath = this.widgetPathOf(ue);
+
+    // A declared slot inside a component page (data-ue-named-slot="Body") becomes a UNamedSlot whose
+    // widget name is the slot name. No Border/SizeBox wrapper: UNamedSlot is a bare content host and
+    // its layout belongs to whoever fills it.
+    if (ue['named-slot']) {
+      return this.buildNamedSlot(rec, style, ctx, String(ue['named-slot']).trim());
+    }
+
+    // Reuse of an already imported widget (contract §10): the element becomes one
+    // instance node, its subtree is not expanded. An explicit data-ue-widget wins; otherwise a
+    // component registry can claim the element by selector (class/tag/id/attribute).
+    let widgetPath = this.widgetPathOf(ue);
+    if (!widgetPath && !Object.prototype.hasOwnProperty.call(ue, 'inline')) {
+      const registered = this.componentFor(rec, ue);
+      if (registered) {
+        widgetPath = registered.path;
+        this.warn(
+          `mapped: '${this.label(rec)}' matches component registry selector "${registered.selector}" -> ${registered.path} (data-ue-widget on the element or data-ue-inline would override this)`
+        );
+      }
+    }
     if (widgetPath) {
       return this.buildWidgetInstance(rec, style, ctx, this.names.unique(ctx.forceName || baseName(rec)), widgetPath);
     }
     if (ue.component) {
       this.warn(
-        `note: data-ue-component="${ue.component}" on '${this.label(rec)}' has no component registry; expanded inline (use data-ue-widget for asset reuse)`
+        `note: data-ue-component="${ue.component}" on '${this.label(rec)}' is not in the component registry (pass --components <file>); expanded inline`
       );
     }
     const kind = this.classify(rec, style);
@@ -2012,7 +2049,158 @@ class Mapper {
     return child;
   }
 
-  /** `data-ue-widget`, or `data-ue-class` holding an asset path. Null when inlining. */
+  /**
+   * A declared slot inside a component page: `<div data-ue-named-slot="Body">…</div>`.
+   *
+   * UNamedSlot's slot name IS its widget name, which is what `data-ue-slot="Body"` on a consuming
+   * page resolves against (the importer walks INamedSlotInterface). Its children are ordinary
+   * mapping output - whatever the page puts in the slot.
+   */
+  buildNamedSlot(rec, style, ctx, slotName) {
+    if (!slotName) {
+      this.warn(`error: data-ue-named-slot on '${this.label(rec)}' is empty; the element is expanded as a plain container`);
+      return this.buildContainer(rec, style, 'container', ctx, this.names.unique(ctx.forceName || baseName(rec)), null);
+    }
+    // A slot is an interface, not a label: keep the author's name verbatim even if a decorative
+    // widget already took it (see NameRegistry.claim).
+    const node = this.makeNode(this.names.claim(slotName), CLASS.NAMED_SLOT, rec, true);
+    const children = [];
+    for (const item of this.childItems(rec)) {
+      if (item.kind !== 'el') {
+        if (item.kind === 'text' && String(item.text || '').trim()) {
+          this.warn(`note: bare text inside a named slot '${slotName}' is ignored; wrap it in an element`);
+        }
+        continue;
+      }
+      const childNode = this.mapElement(item.rec, Object.assign({}, ctx, { isRoot: false, forceName: null }));
+      if (childNode) children.push(childNode);
+    }
+    if (!children.length) {
+      this.warn(
+        `note: named slot '${slotName}' has no children at design time; a UMG NamedSlot can still be filled at run time, this only means the preview is empty`
+      );
+    } else {
+      // UNamedSlot is a content widget: exactly one child. Extra children cannot be expressed, and
+      // silently keeping the first would hide the author's mistake.
+      if (children.length > 1) {
+        this.warn(
+          `note: named slot '${slotName}' holds ${children.length} children; UNamedSlot takes ONE. They are wrapped in a VerticalBox so nothing is lost`
+        );
+        const box = {
+          class: CLASS.VERTICAL,
+          name: this.names.unique(`${slotName}Stack`),
+          properties: {},
+          children,
+        };
+        node.children = [box];
+      } else {
+        node.children = children;
+      }
+    }
+    this.meta.set(node, { rec, style, kind: 'namedslot' });
+    this.nodeBase.set(node, slotName);
+    return node;
+  }
+
+  /**
+   * Component registry lookup (\`--components registry.json\`).
+   *
+   * File shape:
+   *   { "components": [ { "name": "panel-card", "match": ".card, [data-kind=card]",
+   *                       "blueprint": "/Game/UI/WBP_PanelCard" } ] }
+   *
+   * `match` is a comma-separated list of COMPOUND selectors (tag, .class, #id, [attr],
+   * [attr=value] - combinators are not evaluated). `name` lets the page ask for a component
+   * explicitly with \`data-ue-component="panel-card"\`, which is checked first.
+   */
+  componentFor(rec, ue) {
+    const registry = this.componentRegistry();
+    if (!registry.length) return null;
+    const wanted = ue && ue.component ? String(ue.component).trim() : '';
+    if (wanted) {
+      const byName = registry.find((entry) => entry.name === wanted);
+      if (byName) return { path: byName.blueprint, selector: `data-ue-component="${wanted}"` };
+    }
+    for (const entry of registry) {
+      for (const selector of entry.selectors) {
+        if (this.matchesSelector(rec, selector)) {
+          return { path: entry.blueprint, selector };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Lazily normalise the registry option into [{name, blueprint, selectors}]. */
+  componentRegistry() {
+    if (this._registry) return this._registry;
+    const raw = this.opts.components;
+    let list = [];
+    if (Array.isArray(raw)) list = raw;
+    else if (raw && Array.isArray(raw.components)) list = raw.components;
+    else if (raw && typeof raw === 'object') {
+      // Terse form: { ".card": "/Game/UI/WBP_Card" }
+      list = Object.keys(raw).map((key) => ({ match: key, blueprint: raw[key] }));
+    }
+    this._registry = list
+      .map((entry) => ({
+        name: entry && entry.name ? String(entry.name).trim() : '',
+        blueprint: entry && entry.blueprint ? String(entry.blueprint).trim() : '',
+        selectors: entry && entry.match
+          ? String(entry.match).split(',').map((part) => part.trim()).filter(Boolean)
+          : [],
+      }))
+      .filter((entry) => entry.blueprint && entry.selectors.length);
+    if (this._registry.length) {
+      this.infoOnce(
+        `note: component registry has ${this._registry.length} entry(ies); matching elements become widget instances (data-ue-inline opts one out)`
+      );
+    }
+    return this._registry;
+  }
+
+  /** Compound-selector match: tag, .class, #id, [attr], [attr=value]. No combinators. */
+  matchesSelector(rec, selector) {
+    if (!rec || !selector) return false;
+    const text = String(selector).trim();
+    if (!text || text === '*') return true;
+    const classes = rec.cls || [];
+    const attrs = rec.attr || {};
+    const ue = rec.ue || {};
+    const tokens = text.match(/[.#]?[\w-]+|\[[^\]]+\]|\*/g);
+    if (!tokens) return false;
+    for (const token of tokens) {
+      if (token === '*') continue;
+      if (token[0] === '.') {
+        if (!classes.includes(token.slice(1))) return false;
+        continue;
+      }
+      if (token[0] === '#') {
+        if (rec.id !== token.slice(1)) return false;
+        continue;
+      }
+      if (token[0] === '[') {
+        const body = token.slice(1, -1);
+        const eq = body.indexOf('=');
+        if (eq < 0) {
+          const key = body.trim();
+          const value = attrs[key] !== undefined ? attrs[key] : ue[key.replace(/^data-ue-/, '')];
+          if (value === undefined) return false;
+          continue;
+        }
+        const key = body.slice(0, eq).trim();
+        const expected = body.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+        const actual = attrs[key] !== undefined ? attrs[key] : ue[key.replace(/^data-ue-/, '')];
+        if (actual === undefined || String(actual) !== expected) return false;
+        continue;
+      }
+      if (String(rec.tag || '').toLowerCase() !== token.toLowerCase()) return false;
+    }
+    return true;
+  }
+
+  /**
+   * `data-ue-widget`, or `data-ue-class` holding an asset path. Null when inlining. */
   widgetPathOf(ue) {
     if (!ue) return null;
     const hasInline = Object.prototype.hasOwnProperty.call(ue, 'inline');

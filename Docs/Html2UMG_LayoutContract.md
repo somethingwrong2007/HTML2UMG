@@ -298,9 +298,28 @@ Slate 的 `FSlateBrush` 只有**一圈** outline，做不了四边不同。转�
 `data-ue-class="/Game/UI/WBP_Card"` 与 `data-ue-widget` 等价，后者语义更清晰（表达"这是复用"，而不是"这是类名覆盖"）。
 导入器把 `WBP_Foo` 自动解析成 `/Game/UI/WBP_Foo.WBP_Foo_C`。
 
-### 10.2 带插槽的复用：`data-ue-slot`
+### 10.2 带插槽的复用：`data-ue-named-slot` + `data-ue-slot`
 
-被复用的 WBP 里如果放了 `NamedSlot`（UMG 的命名插槽），外层可以往里塞内容：
+**组件页**里用 `data-ue-named-slot` 声明插槽（产物是 `UNamedSlot`，**widget 名 = 插槽名**）：
+
+```html
+<div id="card">
+  <div data-ue-named-slot="Header" style="position:absolute;left:0;top:0;width:480px;height:44px"></div>
+  <div data-ue-named-slot="Body"   style="position:absolute;left:0;top:56px;width:480px;height:184px"></div>
+</div>
+```
+
+几条实现细节（都是踩过的坑）：
+
+| 情况 | 行为 |
+|---|---|
+| 插槽名和别的元素重名（例如 `#body` 也叫 `Body`） | **插槽优先**，其余元素改名 `Body_1`。UMG 的 widget 名是 WidgetTree 子对象名，同名会让 `NewObject` 直接失败并崩编辑器 |
+| 插槽里留了多个子元素 | `UNamedSlot` 只收一个，多个自动包一层 `VerticalBox` 并告警 |
+| 插槽设计期为空 | 允许（预览为空），运行期照样能填 |
+| 组件里插槽底下还有占位文字 | 占位**不会**被清掉，会被盖住——组件页里别放 |
+
+**消费页**再往里塞内容：
+
 
 ```html
 <div data-ue-widget="/Game/UI/WBP_Panel" data-ue-name="Sidebar">
@@ -321,8 +340,30 @@ Slate 的 `FSlateBrush` 只有**一圈** outline，做不了四边不同。转�
 注意：进了命名插槽的控件**没有自己的 `slot` 布局**（布局由被复用 WBP 内部的插槽容器决定），
 所以 `slot` 里的属性会被忽略并告警。
 
-### 10.3 作者期片段复用：`data-ue-partial`
+### 10.6 组件注册表：`--components registry.json`
 
+不想每处手写 `data-ue-widget` 时，用注册表把 CSS 选择器映射到已导入的 WBP：
+
+```json
+{
+  "components": [
+    { "name": "slot-card", "match": ".slotcard, [data-kind=card]",
+      "blueprint": "/Game/UI/Html2UMG/Demo/WBP_SlotCard" }
+  ]
+}
+```
+
+```bash
+node cli/convert.js page.html -o layout.json --viewport 1000x320 --components registry.json
+```
+
+- `match` 支持**复合选择器**：`tag`、`.class`、`#id`、`[attr]`、`[attr=value]`，逗号分隔多个；**不支持**后代/子代组合器；
+- 优先顺序：`data-ue-widget`（显式） > `data-ue-component="name"`（按注册表 name 点名） > `match` 选择器；
+- 某处不想复用：加 `data-ue-inline`；
+- `blueprint` 写**文件夹路径也行**：导入器会补成 `WBP_X/WBP_X.WBP_X_C`（一页一文件夹落盘）；
+- 每次认领都会在 warnings 里留一行 `mapped: ... matches component registry selector ...`。
+
+### 10.3 作者期片段复用：`data-ue-partial`
 复用**标记结构**而不是已导入资产——转换时把另一个 HTML 文件的内容内联进来：
 
 ```html

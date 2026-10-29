@@ -46,6 +46,12 @@ Options:
                             flex widths kept, single-child centre becomes an Overlay.
                             Output is stock UMG only - the plugin ships no runtime module, so a
                             converted blueprint keeps working after the plugin is removed.
+  --components <file.json>  Component registry: CSS compound selectors -> widget blueprint paths.
+                            Matching elements are emitted as instances of the registered WBP
+                            instead of being expanded inline. Shape:
+                            { "components": [ { "name": "card", "match": ".card, [data-kind=card]",
+                                                "blueprint": "/Game/UI/WBP_Card" } ] }
+                            data-ue-widget on an element overrides it; data-ue-inline opts one out.
   --cjk-breaks <m>          policy (default): tell Slate to apply its own CJK break policy.
                             none: no break opportunities are requested for CJK runs.
   --font-policy <mode>      any (default): embed whatever the design asks for.
@@ -231,6 +237,9 @@ function parseArgs(argv) {
         throw new ArgError('--layout: expected exact|responsive, got "' + mode + '"');
       }
       opts.layout = mode;
+    } else if (arg === '--components' || arg.startsWith('--components=')) {
+      const inline = arg.startsWith('--components=') ? arg.slice('--components='.length) : null;
+      opts.components = inline === null ? takeValue() : inline;
     } else if (arg === '--aspects' || arg.startsWith('--aspects=')) {
       const inline = arg.startsWith('--aspects=') ? arg.slice('--aspects='.length) : null;
       opts.aspects = String(inline === null ? takeValue() : inline).trim();

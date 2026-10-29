@@ -1,0 +1,9 @@
+{
+  "components": [
+    {
+      "name": "slot-card",
+      "match": ".slotcard",
+      "blueprint": "/Game/UI/Html2UMG/Demo/WBP_SlotCard"
+    }
+  ]
+}

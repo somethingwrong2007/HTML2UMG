@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>组件复用：注册表 + 命名插槽</title>
+<style>
+  html,body{margin:0;padding:0;width:1000px;height:320px;background:#0E1620;font-family:"Noto Sans SC",sans-serif;color:#E8EEF4}
+  #row{display:flex;gap:24px;padding:24px}
+  /* 注册表用这个类名认领组件：.slotcard -> /Game/UI/Html2UMG/Demo/WBP_SlotCard */
+  .slotcard{width:480px;height:240px}
+  .title{font-size:14px;color:#1A1A1A;line-height:44px;padding-left:16px}
+  .metric{font-size:13px;color:#5C5C5C;line-height:22px;padding-left:16px;padding-top:12px}
+</style></head>
+<body data-ue-blueprint="/Game/UI/Html2UMG/Demo/WBP_ComponentDemo">
+  <div id="row">
+    <div class="slotcard">
+      <div data-ue-slot="Header"><span class="title">遥测面板</span></div>
+      <div data-ue-slot="Body">
+        <div class="metric">高度 1240 m · 速度 82 m/s</div>
+        <div class="metric">剩余燃料 63%</div>
+      </div>
+    </div>
+    <div class="slotcard" data-ue-name="CardB">
+      <div data-ue-slot="Header"><span class="title">第二个实例</span></div>
+      <div data-ue-slot="Body"><div class="metric">插槽内容不同，组件只有一份</div></div>
+    </div>
+  </div>
+</body></html>

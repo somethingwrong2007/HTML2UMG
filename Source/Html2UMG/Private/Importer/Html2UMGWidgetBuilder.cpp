@@ -253,14 +253,30 @@ UClass* FHtml2UMGWidgetBuilder::ResolveWidgetClass(const FString& ClassName, FSt
 		}
 
 		// A blueprint path may omit the object name: "/Game/UI/WBP_Foo" -> "/Game/UI/WBP_Foo.WBP_Foo_C".
+		const FString AssetName = FPackageName::GetShortName(Trimmed);
+		auto TryGenerated = [&Loaded](const FString& PackagePath, const FString& Name) -> bool
+		{
+			const FString GeneratedPath = FString::Printf(TEXT("%s.%s_C"), *PackagePath, *Name);
+			Loaded = LoadObject<UClass>(nullptr, *GeneratedPath);
+			return Loaded != nullptr;
+		};
+
+		if (!Trimmed.Contains(TEXT(".")) && TryGenerated(Trimmed, AssetName))
+		{
+			return Loaded;
+		}
+
+		// The importer nests every widget blueprint one folder deep ("WBP_Foo/WBP_Foo"), so a path
+		// copied from the content browser's folder - which is what people write by hand and what a
+		// component registry naturally contains - is one level short. Try the nested form rather
+		// than fail: measured on a registry entry "/Game/UI/WBP_SlotCard" that resolved to nothing
+		// while the asset was at "/Game/UI/WBP_SlotCard/WBP_SlotCard".
 		if (!Trimmed.Contains(TEXT(".")))
 		{
-			const FString AssetName = FPackageName::GetShortName(Trimmed);
-			const FString GeneratedPath = FString::Printf(TEXT("%s.%s_C"), *Trimmed, *AssetName);
-			UClass* Generated = LoadObject<UClass>(nullptr, *GeneratedPath);
-			if (Generated)
+			const FString NestedPath = FString::Printf(TEXT("%s/%s"), *Trimmed, *AssetName);
+			if (TryGenerated(NestedPath, AssetName))
 			{
-				return Generated;
+				return Loaded;
 			}
 		}
 

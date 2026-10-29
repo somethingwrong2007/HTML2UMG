@@ -1006,13 +1006,23 @@ function pageSnapshot(opts) {
 
     if (el.attributes) {
       var ue = null;
+      var attrMap = null;
       for (var a = 0; a < el.attributes.length; a += 1) {
         var attr = el.attributes[a];
-        if (attr.name.indexOf('data-ue-') !== 0) continue;
-        if (!ue) ue = {};
-        ue[attr.name.slice(8)] = attr.value;
+        if (attr.name.indexOf('data-ue-') === 0) {
+          if (!ue) ue = {};
+          ue[attr.name.slice(8)] = attr.value;
+          continue;
+        }
+        // Plain attributes are kept for one reason: a component registry matches on them
+        // ([data-kind="stat"]). class/id/style would only duplicate fields already recorded (and
+        // style dwarfs everything), so they are skipped.
+        if (attr.name === 'class' || attr.name === 'id' || attr.name === 'style') continue;
+        if (!attrMap) attrMap = {};
+        attrMap[attr.name] = attr.value;
       }
       if (ue) rec.ue = ue;
+      if (attrMap) rec.attr = attrMap;
     }
     // Inactive switcher pages were laid out only for measurement (see revealSwitcherPages).
     if (el.__h2uWasHidden) rec.wasHidden = true;

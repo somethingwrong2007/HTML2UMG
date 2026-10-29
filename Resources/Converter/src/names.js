@@ -123,6 +123,21 @@ class NameRegistry {
     return this.unique(name);
   }
 
+  /**
+   * Reserve a name that MUST stay exactly as given, even when something already took it.
+   *
+   * A UMG NamedSlot is resolved by its widget name, so renaming one to "Body_1" breaks every
+   * consumer that fills "Body" - measured on a component whose decorative div was also called Body.
+   * The other widget keeps its name (UMG tolerates duplicate widget names); the slot wins because
+   * its name is a public interface rather than a label.
+   */
+  claim(name) {
+    const clean = sanitize(name);
+    const key = clean.toLowerCase();
+    this.used.set(key, (this.used.get(key) || 0) + 1);
+    return clean;
+  }
+
   unique(base) {
     const clean = sanitize(base);
     const key = clean.toLowerCase();

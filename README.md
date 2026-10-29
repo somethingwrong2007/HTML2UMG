@@ -123,6 +123,21 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 （箭头由引擎样式画）；而设计稿里那种「`−` 数值 `＋`」的步进器是**两个按钮 + 一个文本**，转换出来就是
 `Button` + `TextBlock`，符号是**文字**（`−` U+2212 / `＋` U+FF0B），跟着字体走，不需要额外图标资产。
 `test/18-inputs.html` 把三种情况放在一页里做对照。
+### 复用已经导入的组件
+
+三种手段，从省事到精确：
+
+| 手段 | 写法 | 产物 |
+|---|---|---|
+| **注册表**（推荐） | `--components test/components.json`，页面里写着 `.slotcard` | 自动变成 `WBP_SlotCard` 实例 |
+| 显式实例 | `data-ue-widget="/Game/.../WBP_SlotCard"` | 同上，单点覆盖注册表 |
+| 片段内联 | `data-ue-partial="fragments/x.html"` | 独立子树（生成期复用） |
+
+组件页用 `data-ue-named-slot="Body"` 声明插槽，消费页用 `data-ue-slot="Body"` 往里塞内容。
+注册表匹配、插槽填装、命名冲突处理的细节见 `Docs/Html2UMG_LayoutContract.md` 第 10 节。
+
+验收页：`test/19a-slot-card.html`（组件，两个插槽）+ `test/19b-component-registry.html`（消费页，两个实例各填不同内容）。
+
 
 ### 样式
 

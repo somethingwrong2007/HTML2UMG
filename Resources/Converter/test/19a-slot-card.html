@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>组件：带命名插槽的卡片</title>
+<style>
+  html,body{margin:0;padding:0;width:480px;height:240px;background:transparent;font-family:"Noto Sans SC",sans-serif}
+  #card{position:absolute;left:0;top:0;width:480px;height:240px;background:#FFFFFF;border:1px solid rgba(0,0,0,.12);border-radius:10px;box-sizing:border-box}
+  #head{position:absolute;left:0;top:0;width:480px;height:44px;border-bottom:1px solid rgba(0,0,0,.08);box-sizing:border-box}
+  #bodyArea{position:absolute;left:0;top:44px;width:480px;height:196px;box-sizing:border-box}
+</style></head>
+<body data-ue-blueprint="/Game/UI/Html2UMG/Demo/WBP_SlotCard">
+  <div id="card">
+    <div id="head">
+      <!-- 插槽名就是 UMG 里 NamedSlot 控件的 widget 名，消费页用 data-ue-slot="Header" 填它 -->
+      <div data-ue-named-slot="Header" style="position:absolute;left:0;top:0;width:480px;height:44px"></div>
+    </div>
+    <div id="bodyArea">
+      <div data-ue-named-slot="Body" style="position:absolute;left:0;top:0;width:480px;height:196px"></div>
+    </div>
+  </div>
+</body></html>

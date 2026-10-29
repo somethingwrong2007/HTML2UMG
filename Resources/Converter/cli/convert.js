@@ -202,6 +202,19 @@ async function main(argv) {
     allowTtc: opts.ttcSubfaces !== false,
   });
 
+  // Component registry (--components): selector -> widget blueprint. Read up-front so a broken
+  // file fails before the browser is even launched.
+  const componentRegistry = (() => {
+    const raw = opts.components || process.env.HTML2UMG_COMPONENTS;
+    if (!raw) return null;
+    const file = path.resolve(String(raw));
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      throw new Error(`--components: cannot read '${file}': ${err.message}`);
+    }
+  })();
+
   // Every knob that changes the output is recorded in layout.settings, so two runs of the
   // same HTML can be diffed (and pixel-audited) without guessing which flags were used.
   const effectiveSettings = {
@@ -400,6 +413,9 @@ async function main(argv) {
         lineBoxSnap: opts.lineBoxSnap,
         layout: effectiveSettings.layout,
         fontMap: effectiveSettings.fontMap,
+        // Selector -> widget blueprint registry (see --components). The mapper claims matching
+        // elements as instances of an already imported WBP instead of expanding them inline.
+        components: componentRegistry,
         wrapTolerance: opts.wrapTolerance,
         cjkBreaks: opts.cjkBreaks,
       },
