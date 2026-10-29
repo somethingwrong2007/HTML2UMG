@@ -347,6 +347,38 @@ UClass* FHtml2UMGWidgetBuilder::ResolveWidgetClass(const FString& ClassName, FSt
 		}
 	}
 
+	// 2b. A bare name from ANY script module ("data-ue-class=CommonAnimatedSwitcher" needs
+	//     /Script/CommonUI.CommonAnimatedSwitcher, which is neither UMG nor Engine and depends on
+	//     which plugins a project has enabled). Rather than hard-coding plugin names, ask every
+	//     loaded module for "<Module>.Name" - a FindObject hit is cheap and does not load anything.
+	if (!Trimmed.Contains(TEXT("/")) && !Trimmed.Contains(TEXT(".")))
+	{
+		TArray<FName> ModuleNames;
+		FModuleManager::Get().FindModules(TEXT("*"), ModuleNames);
+		for (const FName& ModuleName : ModuleNames)
+		{
+			const FString ScriptPath = FString::Printf(TEXT("/Script/%s.%s"), *ModuleName.ToString(), *Trimmed);
+			if (UClass* Found = FindObject<UClass>(nullptr, *ScriptPath))
+			{
+				if (Found->IsChildOf(UWidget::StaticClass()))
+				{
+					return Found;
+				}
+			}
+		}
+
+		// The class is not loaded yet: CommonUI in particular may have its classes pending even
+		// though the module is enabled, so load that one path explicitly before giving up.
+		const FString CommonPath = FString::Printf(TEXT("/Script/CommonUI.%s"), *Trimmed);
+		if (UClass* Loaded = LoadObject<UClass>(nullptr, *CommonPath))
+		{
+			if (Loaded->IsChildOf(UWidget::StaticClass()))
+			{
+				return Loaded;
+			}
+		}
+	}
+
 	// 3. An already-loaded class with that name (blueprint generated classes end in _C).
 	if (UClass* Named = FindObject<UClass>(nullptr, *Trimmed))
 	{

@@ -228,7 +228,7 @@ UnrealEditor-Cmd.exe <Project>.uproject -run=Html2UMG -html="D:/design/design.ht
 | 属性 | 加在 | 作用 |
 |---|---|---|
 | `data-ue-name` | 任意元素 | 生成的控件名，`BindWidget` 按它匹配 |
-| `data-ue-class` | 任意元素 | 强制某个 UMG 类 |
+| `data-ue-class` | 任意元素 | 强制某个 UMG 类。可以写**裸类名**（`Overlay`、`CommonAnimatedSwitcher`），导入器按 `/Script/<每个已加载模块>.<类名>` 逐个试；也可以写完整路径或蓝图资产路径 |
 | `data-ue-variable="false"` | 任意元素 | 不生成蓝图变量 |
 | `data-ue-blueprint` | 根元素 | 覆盖目标资产路径 |
 | `data-ue-font-map` | 根元素 | 字体族 → 字体资产路径的 JSON 映射 |
@@ -321,6 +321,28 @@ Slate 的 `FSlateBrush` 只有**一圈** outline，做不了四边不同。转�
 
 `data-ue-class="/Game/UI/WBP_Card"` 与 `data-ue-widget` 等价，后者语义更清晰（表达"这是复用"，而不是"这是类名覆盖"）。
 导入器把 `WBP_Foo` 自动解析成 `/Game/UI/WBP_Foo.WBP_Foo_C`。
+
+
+
+### 裸类名：`data-ue-class="Overlay"` / `data-ue-class="CommonAnimatedSwitcher"`
+
+类名不必写完整脚本路径，写**裸类名**即可，导入器按这个顺序找：
+
+1. `/Script/UMG.<类名>`、`/Script/Engine.<类名>`（UMG 自己的控件）；
+2. **每个已加载的脚本模块**各试一次 `/Script/<模块>.<类名>`（`FModuleManager::FindModules` +
+   `FindObject`，不触发加载）——所以 `CommonAnimatedSwitcher` 能找到
+   `/Script/CommonUI.` 下的类，不需要硬编码插件名；
+3. 再显式 `LoadObject /Script/CommonUI.<类名>`（CommonUI 的类有时尚未加载）；
+4. 已经加载的同名类（蓝图生成类以 `_C` 结尾）；
+5. 所有已加载控件类的**忽略大小写扫描**。
+
+写蓝图资产路径也行（`data-ue-class="/Game/UI/WBP_Card"`，等价于 `data-ue-widget`）。
+
+**切换器类名都按切换器处理**：类名以 `Switcher` 结尾（`WidgetSwitcher`、
+`CommonAnimatedSwitcher`、`CommonActivatableWidgetSwitcher`）时，它的子元素按"页面"排槽位，
+不会退化成普通 Box 子节点。
+
+验收页 `test/21-bare-class.html`。
 
 ### 10.2 带插槽的复用：`data-ue-named-slot` + `data-ue-slot`
 

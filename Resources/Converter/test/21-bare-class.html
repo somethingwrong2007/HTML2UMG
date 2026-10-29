@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>21 — 裸类名 data-ue-class</title>
+<style>
+  html,body{margin:0;padding:0;width:600px;height:240px;background:#101820;font-family:"Noto Sans SC",sans-serif;color:#E8EEF4}
+  #sw{position:absolute;left:24px;top:24px;width:552px;height:120px}
+  .p{width:552px;height:120px;background:#0067C0;color:#fff;font-size:15px;line-height:120px;text-align:center}
+  .ov{position:absolute;left:24px;top:168px;width:552px;height:48px;background:#1B2634;border-radius:8px}
+</style></head>
+<body data-ue-blueprint="/Game/UI/Html2UMG/Demo/WBP_BareClass">
+  <!--
+    data-ue-class 可以直接写裸类名。CommonUI 的类不在 UMG/Engine 模块里，导入器会按
+    /Script/<每个已加载模块>.<类名> 逐个试（FindObject 不加载任何东西），再退到 CommonUI 的显式加载。
+    UMG 自己的裸类名（Overlay / SizeBox / TextBlock …）同样可用。
+  -->
+  <div id="sw" data-ue-switcher data-ue-class="CommonAnimatedSwitcher" data-ue-name="Switcher">
+    <div class="p" data-ue-name="PageA">页面 A（当前）</div>
+    <div class="p" data-ue-name="PageB" style="background:#0F7A3D">页面 B</div>
+  </div>
+  <div class="ov" data-ue-class="Overlay" data-ue-name="Ov"></div>
+</body></html>

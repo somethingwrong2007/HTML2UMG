@@ -50,6 +50,13 @@ const CLASS = {
   PAGE_SWITCHER: 'PageSwitcher',
 };
 
+/**
+ * Any class name that behaves like a switcher: WidgetSwitcher and its CommonUI variants
+ * (CommonAnimatedSwitcher, CommonActivatableWidgetSwitcher). Matched by name because a project may
+ * spell one of these bare (data-ue-class) instead of using the semantic PageSwitcher.
+ */
+const SWITCHER_CLASS_RE = /Switcher$/;
+
 /** Container class -> box orientation ('v' | 'h' | 'w' for WrapBox). */
 const BOX_SLOTS = {
   [CLASS.VERTICAL]: 'v',
@@ -492,7 +499,12 @@ class Mapper {
     const pmeta = this.meta.get(parent) || {};
     // A switcher shows one page at a time, so its slots are plain Fill: a page is never sized by the
     // slot (WidgetSwitcherSlot has no size rule), only positioned.
-    const isSwitcher = parent.class === CLASS.PAGE_SWITCHER;
+    //
+    // `data-ue-class="CommonAnimatedSwitcher"` (or any other switcher class a project names) is just
+    // as much a switcher: the semantic PageSwitcher is only one spelling of it. Without this, a page
+    // written with a bare class got its children treated as ordinary box children and every child
+    // came out with no slot at all.
+    const isSwitcher = parent.class === CLASS.PAGE_SWITCHER || SWITCHER_CLASS_RE.test(String(parent.class || ''));
     for (let i = 0; i < children.length; i += 1) {
       const child = children[i];
       const cmeta = this.meta.get(child);

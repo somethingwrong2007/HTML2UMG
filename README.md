@@ -166,7 +166,7 @@ hover and press look the way the HTML says. Click behaviour is not converted —
 | Attribute | Effect |
 |---|---|
 | `data-ue-name` | The generated widget name; this is what `BindWidget` matches |
-| `data-ue-class` | Force a specific UMG class for the element |
+| `data-ue-class` | Force a specific UMG class for the element. A **bare class name** works (`Overlay`, `CommonAnimatedSwitcher`): the importer tries `/Script/<every loaded module>.<Name>`; a full script path or a blueprint asset path works too |
 | `data-ue-widget` | Reuse an existing widget blueprint (instance) |
 | `data-ue-component` | Name a component from the registry |
 | `data-ue-inline` | Force this element to expand instead of being reused |

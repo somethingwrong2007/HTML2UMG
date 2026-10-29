@@ -32,6 +32,9 @@ const KNOWN_CLASSES = new Set([
   'PageSwitcher',
   // Added for the effects round: backdrop-filter maps onto UMG's BackgroundBlur.
   'BackgroundBlur',
+  // Reached through an explicit data-ue-class="CommonAnimatedSwitcher". A project's own widget
+  // classes are allowed at run time with --allow-class, so this list never has to know about them.
+  'CommonAnimatedSwitcher',
 ]);
 
 /** Slot class implied by the *parent* container. */
@@ -40,6 +43,7 @@ const SLOT_KEYS = {
   HorizontalBox: ['Padding', 'Size', 'HorizontalAlignment', 'VerticalAlignment'],
   WrapBox: ['Padding', 'HorizontalAlignment', 'VerticalAlignment', 'FillSpanWhenLessThan', 'bFillEmptySpace', 'bForceNewLine'],
   PageSwitcher: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
+  CommonAnimatedSwitcher: ['Padding', 'HorizontalAlignment', 'VerticalAlignment'],
   CanvasPanel: ['LayoutData', 'bAutoSize', 'ZOrder'],
   GridPanel: ['Padding', 'Row', 'RowSpan', 'Column', 'ColumnSpan', 'Layer', 'HorizontalAlignment', 'VerticalAlignment'],
   UniformGridPanel: ['Row', 'Column', 'HorizontalAlignment', 'VerticalAlignment'],

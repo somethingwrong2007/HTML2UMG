@@ -155,7 +155,7 @@ UE 会剥掉 `b` 前缀，所以 `bSuccess` 在 Python 里是 `success`。
 | 属性 | 作用 |
 |---|---|
 | `data-ue-name` | 生成的控件名，`BindWidget` 靠它匹配 |
-| `data-ue-class` | 强制该元素使用某个 UMG 类 |
+| `data-ue-class` | 强制该元素使用某个 UMG 类。可写**裸类名**（`Overlay`、`CommonAnimatedSwitcher`），导入器会按 `/Script/<每个已加载模块>.<类名>` 逐个试；也可写完整路径或蓝图资产路径 |
 | `data-ue-variable="false"` | 不生成蓝图变量 |
 | `data-ue-blueprint` | 写在根元素上，覆盖目标资产路径 |
 | `data-ue-font-map` | 写在根元素上，字体族到字体资产路径的映射 |
