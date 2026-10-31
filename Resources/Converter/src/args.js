@@ -46,6 +46,9 @@ Options:
                             flex widths kept, single-child centre becomes an Overlay.
                             Output is stock UMG only - the plugin ships no runtime module, so a
                             converted blueprint keeps working after the plugin is removed.
+  --no-simplify             Keep wrapper layers the converter would otherwise drop: a SizeBox inside a
+                            canvas slot whose override the slot already expresses, an empty SizeBox, and
+                            a Border that paints nothing. Debug/A-B only; the default removes them.
   --name-verbatim           Keep every data-ue-name exactly as written (underscores included)
                             instead of PascalCasing it. Use when re-importing into a blueprint whose
                             graph is already bound to those names: BndEvt__..._Button_Left_... and
@@ -242,6 +245,8 @@ function parseArgs(argv) {
         throw new ArgError('--layout: expected exact|responsive, got "' + mode + '"');
       }
       opts.layout = mode;
+    } else if (arg === '--no-simplify') {
+      opts.simplify = false;
     } else if (arg === '--name-verbatim') {
       opts.nameVerbatim = true;
     } else if (arg === '--components' || arg.startsWith('--components=')) {

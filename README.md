@@ -275,6 +275,44 @@ Only then do `BndEvt__..._Button_Left_K2Node_ComponentBoundEvent_3` and a variab
 name raises an error-level warning (the second becomes `Button_Left_1`, which breaks the binding just
 as badly, so it must be loud). Acceptance page: `test/20-verbatim-names.html`.
 
+## The widget tree gets simplified
+
+The builder composes every element as `SizeBox -> Border -> [ScrollBox] -> content` plus role wrappers.
+That is correct but deeper than it needs to be, so conversion ends with a pass that removes **only
+layers it can prove change nothing**:
+
+| Rule | Shape | Why it is exact |
+|---|---|---|
+| R1 | a `SizeBox` in a CanvasPanel slot | the slot's anchors + offsets already fix the rectangle and Slate ignores Width/HeightOverride there; kept unless the override agrees with the measured rect within 1px, and the hoisted child then computes an identical slot |
+| R4 | a `SizeBox` with no override at all | a pure container, equal to its parent's slot |
+| R5 | a `Border` that paints nothing (transparent brush, no padding, no clipping, no slider overhang) | it produces no pixels |
+
+Two hard limits:
+
+1. **Only generated role wrappers are removed** (`_Box`, `_BG`, `_Pad`, `_Inner`, `_Scroll`, ...). A name
+   the author wrote (`data-ue-name` / `#id` / class) is a contract with the blueprint graph and is always
+   kept - an earlier, looser rule also deleted author names like `BoxLeft` / `BoxRight`.
+2. **A rounded box whose corner is saturated keeps its wrapper**: not removed when `drawAs=RoundedBox`
+   and `maxCornerRadius + outlineWidth >= half the smaller side`.
+
+The evidence for limit 2 (every row verified by a byte-for-byte render against `--no-simplify`, with every
+widget's geometry bit-identical):
+
+| Page | Wrapper | Size / radius / outline | After removal |
+|---|---|---|---|
+| 07-anchors | `RightBadge_Box` | 168x36, r18, o1 (18+1 >= 18) | 404 px moved (a ring at the edge) |
+| 02-absolute | `StatusPill_Box` | 222x42, r20, o1 (20+1 >= 21) | 494 px moved |
+| 02-absolute | `Floating_Box` | 12x12, r6, o0 (6 >= 6) | 52 px moved |
+| all the rest | Chip 96x28 r6, CenterBox 360x140 r10, MaxBox 560x40 r8, AltBadge 206x66 r6, BottomBar 422x54 r8, and every non-RoundedBox brush | - | **byte-identical** |
+
+In short: only a rounded box whose radius gets clamped changes its corner anti-aliasing when its
+geometry chain changes. One known over-conservative case: `HalfBar` 960x8 r4 satisfies the test and is
+kept, although removing it also measured identical - keeping a layer is the safe direction.
+
+Result: 113 layers removed across the 26 component pages (`UpscalingBlock` 223 -> 164, -26%), and 1117 ->
+1066 widgets across the fixtures. **All 11 affected pages render byte-identical to the unsimplified
+build.** Use `--no-simplify` to reproduce the old output.
+
 ## Responsive: one WBP for many sizes
 
 UMG has no flexbox, so "matches the browser" has two meanings and the converter has two modes:

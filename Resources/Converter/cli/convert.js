@@ -419,6 +419,8 @@ async function main(argv) {
         // --name-verbatim: keep data-ue-name exactly as authored, so a graph copied from the previous
         // import still binds its events and variables. Per element: data-ue-name-verbatim.
         nameVerbatim: opts.nameVerbatim === true,
+        // Tree simplification: drop wrapper layers that cannot change a pixel (default on).
+        simplify: opts.simplify !== false,
         wrapTolerance: opts.wrapTolerance,
         cjkBreaks: opts.cjkBreaks,
       },

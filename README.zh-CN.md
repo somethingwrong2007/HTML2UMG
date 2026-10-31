@@ -248,6 +248,39 @@ approximated: CSS motion is not converted - 2 rule(s) with transition (.tab, .bt
 不加则仍是 PascalCase（`ButtonLeft`）。verbatim 重名会打 **error 级警告**（第二个被改成
 `Button_Left_1`，那同样会断绑定，所以必须显眼）。验收页 `test/20-verbatim-names.html`。
 
+## 控件树简化：去掉不产生任何像素的包装层
+
+构建时每个元素都按 `SizeBox → Border → [ScrollBox] → 内容` 加角色包装，结构正确但层级偏多。
+转换结束会做一遍**只删「可证明不改变一个像素」的层**：
+
+| 规则 | 形状 | 为什么是精确的 |
+|---|---|---|
+| R1 | CanvasPanel 槽里的 `SizeBox` | 槽位的锚点 + 偏移已经定死矩形，Slate 在 canvas 槽里忽略 Width/HeightOverride；且只有 Override 与实测矩形一致（±1px）才删，被提升的子节点会算出完全相同的槽 |
+| R4 | 没有任何 Override 的 `SizeBox` | 纯容器，等价于父槽本身 |
+| R5 | 不画任何东西的 `Border`（画刷全透明、无 padding、无裁剪、无滑杆外溢） | 不产生像素 |
+
+**两条硬性限制：**
+
+1. **只删带角色后缀的生成包装**（`_Box` / `_BG` / `_Pad` / `_Inner` / `_Scroll` …）。作者自己起的名字
+   （`data-ue-name` / `#id` / class）是蓝图图表的绑定契约，一律保留——早期一条更宽的规则会连
+   `BoxLeft` / `BoxRight` 这类作者名一起删掉。
+2. **圆角「饱和」的圆角矩形保留外层**：`drawAs=RoundedBox` 且 `最大圆角 + 描边宽 ≥ 短边/2` 时不删。
+
+第 2 条的实测依据（每一行都用「与 `--no-simplify` 同页渲染逐字节对比」验证，且所有控件的几何**逐位相同**）：
+
+| 页面 | 包装 | 尺寸 / 圆角 / 描边 | 删除后 |
+|---|---|---|---|
+| 07-anchors | `RightBadge_Box` | 168×36, r18, o1（18+1 ≥ 18） | 404 px 变化（边缘环） |
+| 02-absolute | `StatusPill_Box` | 222×42, r20, o1（20+1 ≥ 21） | 494 px 变化 |
+| 02-absolute | `Floating_Box` | 12×12, r6, o0（6 ≥ 6） | 52 px 变化 |
+| 其余全部 | Chip 96×28 r6、CenterBox 360×140 r10、MaxBox 560×40 r8、AltBadge 206×66 r6、BottomBar 422×54 r8，以及所有非 RoundedBox 画刷 | — | **逐字节相同** |
+
+结论：**只有「圆角被钳制」的圆角盒**在几何链变化时抗锯齿会动，别的都是无损的。已知偏保守的一例：
+`HalfBar` 960×8 r4 满足条件被保留，实测删除其实也相同——保留一层是安全方向。
+
+效果：26 个组件页共删 **113 层**（`UpscalingBlock` 223→164，-26%），测试页合计 1117→1066 个控件。
+**11 个受影响页面全部与未简化版渲染逐字节相同。** 想复现未简化输出：`--no-simplify`。
+
 ## 响应式：一份 WBP 适配多种尺寸
 
 UMG 没有 flexbox，所以"和浏览器一致"要分两种情况说，转换器也分成两种模式：

@@ -480,6 +480,7 @@ class Mapper {
       this.meta.set(wrapper, { synthetic: true, style: null, rec: null, kind: 'scalebox' });
       root = wrapper;
     }
+    root = this.simplifyTree(root);
     this.assignSlots(root);
     // Only worth a line when the canvas rule actually fired somewhere: on a page with no such
     // parent the mechanism is inert and the note would just be noise (it also keeps those pages'
@@ -489,6 +490,140 @@ class Mapper {
       this.infoOnce(
         `note: ${this._centerKept.length} element(s) stay cross-axis centred inside a fixed-size parent that is not the page canvas (e.g. '${sample}'); centring follows the widget's own size there and stays correct at any viewport`
       );
+    }
+    return root;
+  }
+
+  /**
+   * Drop wrapper layers that cannot change a single pixel.
+   *
+   * The builder composes every element as SizeBox -> Border -> [ScrollBox] -> content plus role
+   * wrappers. That is correct but produces chains nobody wants to edit, so these three rules remove
+   * only layers whose contribution is provably zero - each one is checked against the geometry it
+   * would otherwise express:
+   *
+   *   R1  a SizeBox inside a CanvasPanel slot: the slot's anchors + offsets already fix the rectangle
+   *       and Slate ignores Width/HeightOverride there. Removed only when the override agrees with the
+   *       measured rect within 1px, so the hoisted child recomputes an identical slot.
+   *   R4  a SizeBox with no override at all: a pure container, equal to its parent's slot.
+   *   R5  a Border that paints nothing (no brush, or a fully transparent tint) with no padding,
+   *       no clipping and no slider overhang.
+   *
+   * Every rule additionally requires the node's name to END WITH A ROLE SUFFIX (_Box, _BG, _Padding's
+   * _Pad, ...). Those names are the converter's own, so dropping them costs nothing; a name the author
+   * wrote (data-ue-name / id / class) is a contract with the blueprint graph, and removing its widget
+   * would silently break a binding. Measured over the 26 component pages: 115 layers removed, and the
+   * only author-named ones the earlier, looser rule also hit were "BoxLeft" / "BoxRight".
+   *
+   * Deliberately NOT done: hoisting single-child Overlay/CanvasPanel/box wrappers in general. Container
+   * and child come from different elements, so the child's slot would be recomputed from its own CSS
+   * box instead of the container's - that changes geometry, not just structure.
+   */
+  simplifyTree(root) {
+    if (this.opts.simplify === false) return root;
+    const GENERATED_SUFFIXES = Object.values(ROLE_SUFFIX).filter(Boolean);
+    const isGeneratedWrapper = (name) => GENERATED_SUFFIXES.some((suffix) => name.endsWith(suffix));
+    const KEEP_KINDS = new Set(['relbox', 'pct-row', 'pct-spacer', 'widget-instance', 'scalebox']);
+    let removed = 0;
+    const reasons = { sizeboxInCanvas: 0, emptySizeBox: 0, transparentBorder: 0 };
+
+    const overrideAgrees = (node) => {
+      const props = node.properties || {};
+      const rec = (this.meta.get(node) || {}).rec;
+      const rect = rec && rec.rect ? rec.rect : null;
+      if (!rect) return false;
+      const dw = props.bOverride_WidthOverride ? Math.abs(Number(props.WidthOverride) - rect[2]) : 0;
+      const dh = props.bOverride_HeightOverride ? Math.abs(Number(props.HeightOverride) - rect[3]) : 0;
+      return dw <= 1 && dh <= 1;
+    };
+
+    /**
+     * Keep the wrapper when its child is a rounded box whose corner is saturated:
+     * `maxCornerRadius + outlineWidth >= half the box's smaller dimension`.
+     *
+     * Why this and not something simpler: hoisting a wrapper is only invisible when the child's
+     * painted coverage does not depend on how its geometry was produced. It does for a rounded box
+     * whose corner radius reaches the clamp - the coverage ramp of that corner then differs between
+     * "the canvas allots it directly" and "an SBox clamps and re-hands the allotment".
+     *
+     * The rule is fitted to every wrapper we have A/B-tested (byte-for-byte render against
+     * --no-simplify, geometry bit-identical in all cases):
+     *
+     *   MOVED  07-anchors  badge 168x36 r18 o1  (18+1 >= 18)   404 px, ring at the edge
+     *   MOVED  02-absolute pill  222x42 r20 o1  (20+1 >= 21)   494 px, the pill itself
+     *   MOVED  02-absolute dot    12x12 r 6 o0  ( 6+0 >=  6)    52 px, its 12x12 corner
+     *   same   Chip 96x28 r6 o1, CenterBox 360x140 r10 o1, MaxBox 560x40 r8 o1,
+     *          AltBadge 206x66 r6 o1, BottomBar 422x54 r8 o1, and every non-rounded brush
+     *
+     * One known over-conservative case: HalfBar 960x8 r4 o0 satisfies the test and is kept even
+     * though removing it measured identical. Keeping a layer is the safe direction.
+     */
+    const cornerSaturated = (node) => {
+      const brush = node && node.brush;
+      if (!brush || brush.drawAs !== 'RoundedBox') return false;
+      const radii = Array.isArray(brush.cornerRadii) ? brush.cornerRadii.map(Number) : [];
+      if (!radii.length) return false;
+      const meta = this.meta.get(node) || {};
+      const rec = meta.rec || null;
+      const rect = rec && rec.rect ? rec.rect : null;
+      if (!rect) return false;
+      const half = Math.min(Number(rect[2]), Number(rect[3])) / 2;
+      if (!(half > 0)) return false;
+      const outline = Number(brush.outlineWidth || 0);
+      return Math.max(...radii) + outline >= half - 0.01;
+    };
+
+    const visit = (node, parent) => {
+      if (!node) return null;
+      if (node.children) {
+        node.children = node.children.map((child) => visit(child, node)).filter(Boolean);
+      }
+      if (!parent) return node;
+
+      const meta = this.meta.get(node) || {};
+      if (KEEP_KINDS.has(meta.kind) || meta.isFlowGroup || meta.synthetic) return node;
+      const children = node.children || [];
+      const props = node.properties || {};
+      // Only generated wrappers are disposable; an authored name is a binding contract.
+      if (!isGeneratedWrapper(node.name || '')) return node;
+
+      if (node.class === CLASS.SIZE_BOX && children.length === 1) {
+        const hasOverride = !!(props.bOverride_WidthOverride || props.bOverride_HeightOverride);
+        if (!cornerSaturated(children[0])) {
+          if (parent.class === CLASS.CANVAS && hasOverride && overrideAgrees(node)) {
+            removed += 1; reasons.sizeboxInCanvas += 1;
+            return children[0];
+          }
+          const anyOverride = Object.keys(props).some((key) => key.startsWith('bOverride_') && props[key]);
+          if (!anyOverride) {
+            removed += 1; reasons.emptySizeBox += 1;
+            return children[0];
+          }
+        }
+      }
+
+      if (node.class === CLASS.BORDER && children.length === 1) {
+        const overhang = Number(meta.overhang || 0);
+        const tint = node.brush && node.brush.tint ? Number(node.brush.tint[3]) : 1;
+        const paintsNothing = tint <= 0.004;
+        const padding = props.Padding;
+        const noPadding = !padding || (Array.isArray(padding) && padding.every((v) => Math.abs(Number(v)) < 0.01));
+        if (paintsNothing && noPadding && !props.Clipping && overhang === 0) {
+          removed += 1; reasons.transparentBorder += 1;
+          return children[0];
+        }
+      }
+
+      return node;
+    };
+
+    root = visit(root, null);
+    if (removed > 0) {
+      const parts = [];
+      if (reasons.sizeboxInCanvas) parts.push(reasons.sizeboxInCanvas + ' SizeBox in a canvas slot');
+      if (reasons.emptySizeBox) parts.push(reasons.emptySizeBox + ' empty SizeBox');
+      if (reasons.transparentBorder) parts.push(reasons.transparentBorder + ' transparent Border');
+      this.infoOnce('note: simplified the widget tree - removed ' + removed + ' layer(s): ' + parts.join(', '));
     }
     return root;
   }
