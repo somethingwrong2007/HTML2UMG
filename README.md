@@ -4,7 +4,7 @@ Turn HTML/CSS designs into native UMG widget blueprints. No browser at runtime �
 ordinary Widget Blueprint you can keep editing in the UMG Designer and bind to C++ or Blueprint
 with `BindWidget`.
 
-> English is the default. 中文版: [README.zh-CN.md](README.zh-CN.md)
+>中文版: [README.zh-CN.md](README.zh-CN.md)
 
 ```
 design.html  --[Node + a local Chromium]-->  design.json  --[UE editor module]-->  WBP_Asset
