@@ -808,7 +808,11 @@ function pageSnapshot(opts) {
           position: before.position,
           visibility: before.visibility
         };
-        kid.style.display = 'block';
+        // A hidden page often declares its own display, and overriding it with "block" would lose
+        // e.g. flex-direction: an HBox page came back as a VBox. data-ue-display lets the author (and
+        // the WBP->HTML writer) state the display the page has while it is visible.
+        const declaredDisplay = kid.getAttribute('data-ue-display');
+        kid.style.display = declaredDisplay || 'block';
         // Both left and right pinned: an absolutely positioned box with auto width would
         // shrink-to-fit (measured 131px instead of the 520px page width).
         kid.style.position = 'absolute';
@@ -959,7 +963,11 @@ function pageSnapshot(opts) {
     // be measured. Report the styles the author actually wrote, otherwise the converter treats the
     // page as an absolutely positioned child of a canvas instead of a plain block page.
     if (el.__h2uWasHidden && el.__h2uOrig) {
-      rec.cs.display = el.__h2uOrig.display === 'none' ? 'block' : el.__h2uOrig.display || 'block';
+      // A page hidden with display:none becomes a block once the hiding is lifted, which is what the
+      // author's rule means - unless the page says otherwise with data-ue-display. Without that a
+      // flex page was recorded as display:block and came back as a VerticalBox instead of an HBox.
+      const declaredDisplay = el.getAttribute ? el.getAttribute('data-ue-display') : null;
+      rec.cs.display = declaredDisplay || (el.__h2uOrig.display === 'none' ? 'block' : el.__h2uOrig.display || 'block');
       rec.cs.position = el.__h2uOrig.position || 'static';
       rec.cs.visibility = el.__h2uOrig.visibility || 'visible';
     }

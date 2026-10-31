@@ -1621,7 +1621,12 @@ class Mapper {
     }
 
     const style = this.readStyle(rec);
-    if (style.visibility === 'hidden') {
+    // A switcher page that was display:none is measured by revealing it with visibility:hidden, and
+    // every DESCENDANT inherits that, so each one used to be dropped ("is visibility:hidden and was
+    // skipped") and a hidden page came back as an empty shell - or, when the root of the page itself
+    // was hidden too, not at all. The revealed marker has to travel down the subtree.
+    const revealed = !!ctx.revealed || !!rec.wasHidden;
+    if (style.visibility === 'hidden' && !revealed) {
       this.warn(`note: '${this.label(rec)}' is visibility:hidden and was skipped`);
       return null;
     }
@@ -1632,6 +1637,7 @@ class Mapper {
       depth: ctx.depth + 1,
       orientation: ctx.orientation || null,
       isRoot: !!ctx.isRoot,
+      revealed,
       forceName: ctx.forceName || null,
     });
   }

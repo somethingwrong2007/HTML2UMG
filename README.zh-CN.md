@@ -452,6 +452,34 @@ Slate 的画刷只能是一个颜色或一张图，没有渐变、没有背景�
 半径+细边框、半径+粗边框、单边、双色、四色、四角不同、虚线、双线、透明底、嵌套圆角）。
 当前整页差异 **0.40%**，最差单个色块 2.8%（就是上面那根 1px 线）。
 
+## 反向：把已经做好的 WBP 转回 HTML
+
+管线的中间层是同一份 JSON，所以反向只要回到那一层：
+
+```bat
+:: 1) 导出 WBP（编辑器控制台命令；同时把贴图导成 png、字体复制成 ttf）
+UnrealEditor-Cmd.exe <工程>.uproject \
+  -ExecCmds="Html2UMG.ExportLayout /Game/UI/WBP_X --json=C:/out/x.json --assets=C:/out/x_assets --viewport=1920x1080, QUIT_EDITOR" \
+  -unattended -windowed -stdout
+
+:: 2) 生成 HTML（Node，不需要引擎）
+node Plugins/Html2UMG/Resources/Converter/cli/wbp2html.js C:/out/x.json -o C:/out/x.html
+
+:: 3) 往返校验（WBP -> JSON -> HTML -> JSON，逐项对比）
+node Resources/Tools/layout_diff.js a.json b.json --tolerance 1 --verbose
+```
+
+三个换算必须精确还原，否则结果会漂：颜色在 JSON 里是**线性**空间（`FSlateColor`），字号是 Slate **pt**
+（`px = pt * 4/3`），行高是一个**乘数**（`LineHeightPercentage = cssBox / slateBox`，要靠字体度量换算，
+所以导出器会把 ttf 一起复制出来）。CSS 画不出的控件保留 `data-ue-class` / `data-ue-widget` /
+`data-ue-named-slot` / `data-ue-switcher` 标记，回导时重建同一个控件。
+
+实测 8 个组件页：**5 个往返后完全一致**（RowSlider / RowSwitch / RowEnum / Progress / Slider），
+其余 3 个是已知限制：9-slice 画刷的 Margin 与 CSS padding 互换、贴图乘 tint 在 CSS 里无法表达、
+以及一个没有孩子的空 Overlay 在 CSS 里没有任何信号可以承载。
+
+完整说明（含限制清单与验证方法）：`Docs/Html2UMG_ReverseExport.md`。
+
 ## 验证工具
 
 转换过程可以量化，不必靠眼睛判断"像不像"。

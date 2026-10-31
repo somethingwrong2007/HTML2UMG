@@ -509,6 +509,36 @@ radius + thin border, radius + thick border, single side, two colours, four colo
 dashed, double, transparent background, nested radius). Current whole-page difference **0.40%**, worst
 single swatch 2.8% (that 1px line).
 
+## The other direction: a finished WBP back to HTML
+
+The pipeline's middle layer is one JSON, so going back only has to reach that layer:
+
+```bat
+:: 1) export the WBP (editor console command; also writes the textures as png and copies the fonts)
+UnrealEditor-Cmd.exe <Project>.uproject \
+  -ExecCmds="Html2UMG.ExportLayout /Game/UI/WBP_X --json=C:/out/x.json --assets=C:/out/x_assets --viewport=1920x1080, QUIT_EDITOR" \
+  -unattended -windowed -stdout
+
+:: 2) write the HTML (Node, no engine needed)
+node Plugins/Html2UMG/Resources/Converter/cli/wbp2html.js C:/out/x.json -o C:/out/x.html
+
+:: 3) round-trip check (WBP -> JSON -> HTML -> JSON, item by item)
+node Resources/Tools/layout_diff.js a.json b.json --tolerance 1 --verbose
+```
+
+Three conversions have to be undone exactly or the result drifts: colours are **linear** in the JSON
+(`FSlateColor`) while CSS is sRGB, the font size is Slate **points** (`px = pt * 4/3`), and line height is
+a **multiplier** (`LineHeightPercentage = cssBox / slateBox`, which needs the font metrics - so the
+exporter copies the ttf out). Anything CSS cannot draw keeps a marker (`data-ue-class`, `data-ue-widget`,
+`data-ue-named-slot`, `data-ue-switcher`) so the re-import rebuilds the same widget.
+
+Measured across 8 component pages: **5 round-trip exactly** (RowSlider, RowSwitch, RowEnum, Progress,
+Slider). The other 3 are known limits: a 9-slice brush's Margin trades places with CSS padding, a
+texture multiplied by a tint cannot be expressed in CSS, and an empty Overlay with no children has no
+signal at all for CSS to carry.
+
+Full write-up, limits included: `Docs/Html2UMG_ReverseExport.md`.
+
 ## Verification tools
 
 Conversion is quantifiable; you do not have to judge "looks close" by eye.
