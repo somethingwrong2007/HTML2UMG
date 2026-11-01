@@ -738,6 +738,8 @@ per-page choice, not a default.
 | A `BindWidget` is null | Add `data-ue-name` to the element; near-miss names are suggested in the message |
 | Import failed but the asset was saved | The asset is a half-built draft; fix and re-import |
 | Textures did not change after re-import | Names are content addressed, so changed pixels change the name; if the name is identical, nothing was re-baked |
+| After a re-import the blueprint compiler reports `Widget [X] was added but did not get a GUID` (or `SeenVariableNames`) | The importer now maintains `WidgetVariableNameToGuidMap` itself: a new widget gets the engine's own **deterministic** guid, and entries for widgets that no longer exist are dropped. Without this the engine repairs a missing entry with `FGuid::NewGuid()`, a **random** guid that changes every compile and silently breaks anything referencing that widget's variable |
+| The editor dies with `Renaming an object (...) on top of an existing object` during a re-import | A retired widget is no longer parked under a counter-based name (the counter restarts on the next import while the previous import's garbage object still holds `X_H2URetired_0`). It asks `MakeUniqueObjectName` for a name that is actually free |
 | Page switching always shows page one | The container lacks `data-ue-switcher`; or CommonUI is not enabled but you expected transition animation (the log says which class was used) |
 | Hidden pages are empty in UMG | That page is not a child of a `data-ue-switcher` container, so the converter had no reason to measure it |
 | Generated names are still long | That is an older build's output; `data-ue-name` is used verbatim and automatic names carry one role suffix |

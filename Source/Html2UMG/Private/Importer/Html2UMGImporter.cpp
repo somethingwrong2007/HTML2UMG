@@ -28,6 +28,7 @@
 #include "UObject/Package.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
+#include "Animation/WidgetAnimation.h"
 #include "AssetCompilingManager.h"
 
 static TFunction<void(const FH2UMessage&)> GMessageSink;
@@ -280,6 +281,83 @@ bool FHtml2UMGImporter::ImportLayout(const FH2ULayout& Layout, const FH2UImportO
 
 	Info(FString::Printf(TEXT("Widget tree: %d created, %d reused, %d properties set, %d unknown, %d failed."),
 		Builder.WidgetsCreated, Builder.WidgetsReused, Builder.PropertiesSet, Builder.UnknownProperties, Builder.FailedProperties));
+
+	// ---- 5b. keep the widget-variable GUID map in step with the tree ----
+	//
+	// UWidgetBlueprint::WidgetVariableNameToGuidMap is what gives every widget a stable GUID, and the
+	// blueprint compiler validates it in BOTH directions (WidgetBlueprintCompiler.cpp:758-820):
+	//
+	//   * every widget in the tree must have an entry    -> "Widget [X] was added but did not get a GUID"
+	//   * every entry must belong to a widget that still exists
+	//
+	// A programmatic rebuild breaks both: an in-place import ADDS widgets (the auto-named Div_N / Span_N
+	// of a source that does not name its divs) and RETIRES others, while the map is only ever maintained
+	// by the WBP editor's own UI. The compiler does repair a missing entry - but with FGuid::NewGuid(), a
+	// RANDOM guid that changes on every compile, which invalidates any external reference to that
+	// widget's variable. Doing it here keeps the engine's own deterministic guid, so identity survives
+	// a re-import.
+	{
+		TSet<FName> LiveNames;
+		WidgetBlueprint->ForEachSourceWidget([&LiveNames](UWidget* LiveWidget)
+		{
+			if (LiveWidget)
+			{
+				LiveNames.Add(LiveWidget->GetFName());
+			}
+		});
+		// Animations share the map. Dropping their entries would make the compiler re-create them with a
+		// random guid, so they count as live even though ForEachSourceWidget never visits them.
+		for (UWidgetAnimation* Animation : WidgetBlueprint->Animations)
+		{
+			if (Animation)
+			{
+				LiveNames.Add(Animation->GetFName());
+			}
+		}
+
+		int32 StaleRemoved = 0;
+		for (auto It = WidgetBlueprint->WidgetVariableNameToGuidMap.CreateIterator(); It; ++It)
+		{
+			if (!LiveNames.Contains(It.Key()))
+			{
+				It.RemoveCurrent();
+				++StaleRemoved;
+			}
+		}
+
+		int32 MissingAdded = 0;
+		WidgetBlueprint->ForEachSourceWidget([WidgetBlueprint, &MissingAdded](UWidget* LiveWidget)
+		{
+			if (!LiveWidget)
+			{
+				return;
+			}
+			const FName Name = LiveWidget->GetFName();
+			if (WidgetBlueprint->WidgetVariableNameToGuidMap.Contains(Name))
+			{
+				return;
+			}
+			WidgetBlueprint->WidgetVariableNameToGuidMap.Add(Name, FGuid::NewDeterministicGuid(LiveWidget->GetPathName()));
+			++MissingAdded;
+		});
+		// Animations too: the engine fills the whole map only while it is EMPTY, so as soon as this runs
+		// once the engine's own deterministic pass is skipped for good and an animation left without an
+		// entry would be repaired with a random guid instead.
+		for (UWidgetAnimation* Animation : WidgetBlueprint->Animations)
+		{
+			if (!Animation || WidgetBlueprint->WidgetVariableNameToGuidMap.Contains(Animation->GetFName()))
+			{
+				continue;
+			}
+			WidgetBlueprint->WidgetVariableNameToGuidMap.Add(Animation->GetFName(), FGuid::NewDeterministicGuid(Animation->GetPathName()));
+			++MissingAdded;
+		}
+
+		if (StaleRemoved > 0 || MissingAdded > 0)
+		{
+			Info(FString::Printf(TEXT("Widget variable GUIDs: %d added, %d stale removed."), MissingAdded, StaleRemoved));
+		}
+	}
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 

@@ -667,6 +667,8 @@ UnrealEditor.exe <工程>.uproject ^
 | 某个 `BindWidget` 为空 | 给对应元素加 `data-ue-name`，名字接近时消息里会提示疑似拼写 |
 | 导入失败但资产已存 | 资产是半成品，改完重新导入即可 |
 | 重导后贴图没变 | 贴图按内容寻址，源文件变了名字就会变；如果没变说明没重新烘焙 |
+| 重导后编译报 `Widget [X] was added but did not get a GUID`（或 `SeenVariableNames`） | 导入器现在自己同步 `WidgetVariableNameToGuidMap`：给新控件补**确定性 GUID**（与引擎首次填充同一个公式），并清掉已删控件的残留条目。旧版本不做这件事，引擎兜底时用**随机 GUID**——每编译一次换一个，指向该控件变量的外部引用会静默失效 |
+| 重导时编辑器 Fatal：`Renaming an object (...) on top of an existing object` | 退休控件的改名不再用自增计数器（它每次导入都会重置，而上一轮的垃圾对象还占着 `X_H2URetired_0`），改用 `MakeUniqueObjectName` 要一个真正空闲的名字 |
 | 切页只在第一页 | 容器没加 `data-ue-switcher`；或项目没启用 CommonUI 却期望切页动画（日志会说明回退到 `WidgetSwitcher`） |
 | 隐藏页在 UMG 里是空的 | 该页不是 `data-ue-switcher` 的子元素，转换器没有理由去测量它 |
 | 转出来的名字还是太长 | 那是旧版本产物；`data-ue-name` 会原样成为控件名，其余自动名只带一个角色后缀 |

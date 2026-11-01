@@ -470,9 +470,20 @@ void FHtml2UMGWidgetBuilder::RetireWidget(UWidget* Widget)
 
 	Tree.RemoveWidget(Widget);
 
-	// Free the canonical name first, so the replacement widget can take it over cleanly.
-	const FString RetiredName = FString::Printf(TEXT("%s_H2URetired_%d"), *Widget->GetName(), RetirementCounter++);
-	Widget->Rename(*RetiredName, nullptr, REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional);
+	// Free the canonical name so the replacement widget can take it over cleanly, by parking the old
+	// one under a name NOTHING else uses.
+	//
+	// The old naming ("<Name>_H2URetired_<counter>") was not collision-proof: a retired widget stays
+	// alive as garbage and keeps its name, while the counter restarts on the next import, so the second
+	// import produced the same name again and the engine treats renaming an object onto an existing
+	// object as FATAL. Measured on a real re-import of WBP_MainMenu:
+	//   Renaming an object (...WidgetTree.Root) on top of an existing object
+	//                    (...WidgetTree.Root_H2URetired_0) is not allowed   [Obj.cpp:383]
+	// and the editor died. MakeUniqueObjectName asks the object set instead of counting, so the name
+	// is free by construction however many imports have run in this session.
+	const FName RetiredBase(*FString::Printf(TEXT("%s_H2URetired"), *Widget->GetName()));
+	const FName RetiredName = MakeUniqueObjectName(Widget->GetOuter(), Widget->GetClass(), RetiredBase);
+	Widget->Rename(*RetiredName.ToString(), nullptr, REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional);
 	Widget->MarkAsGarbage();
 }
 
