@@ -95,6 +95,5 @@ private:
 	TSet<FName> UsedNames;
 
 	bool bRebuildInPlace = false;
-	int32 RetirementCounter = 0;
 	int32 DepthGuard = 0;
 };
