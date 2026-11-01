@@ -742,6 +742,7 @@ per-page choice, not a default.
 | The editor dies with `Renaming an object (...) on top of an existing object` during a re-import | A retired widget is no longer parked under a counter-based name (the counter restarts on the next import while the previous import's garbage object still holds `X_H2URetired_0`). It asks `MakeUniqueObjectName` for a name that is actually free |
 | Page switching always shows page one | The container lacks `data-ue-switcher`; or CommonUI is not enabled but you expected transition animation (the log says which class was used) |
 | Hidden pages are empty in UMG | That page is not a child of a `data-ue-switcher` container, so the converter had no reason to measure it |
+| A control on a switcher page bakes to a blank texture | Before baking a control's state textures, the page it belongs to is switched to current (its active classes are copied, the sibling pages hidden) and everything is put back afterwards; the snapshot measurement does the same. Author the pages as `.page{display:none}` + `.page.active{display:flex;…}` (put the whole "current" block in the active class), or state the visible display with `data-ue-display` |
 | Generated names are still long | That is an older build's output; `data-ue-name` is used verbatim and automatic names carry one role suffix |
 
 ## Directory structure

@@ -316,6 +316,107 @@ async function clearCss(session) {
   );
 }
 
+/**
+ * Make the switcher page that owns a control visible for the duration of its bake.
+ *
+ * Every bake below clips a rectangle out of the LIVE page, and a control that lives on a switcher's
+ * non-current page is display:none there (that is how a switcher is written, and how the converter
+ * finds the pages). The clip therefore captured the page background instead of the control: measured
+ * on _repro/switcher_bake.html, the second page's checkbox baked as 336 transparent + 2864 opaque
+ * white px with the SAME content hash for checked, unchecked and hover - one blank texture reused for
+ * three states - while the current page's checkbox baked correctly (accent 2264 + white 600).
+ *
+ * Symmetric to snapshot.js revealSwitcherPages(): show the owning page, hide its siblings, put the
+ * styles back afterwards. The saved styles live on window because DOM nodes cannot cross the CDP
+ * boundary.
+ *
+ * The page is positioned the way revealSwitcherPages() positions it while measuring - display from
+ * data-ue-display (a flex page must not become a plain block), pinned to the top with both horizontal
+ * edges - because that is the geometry rec.rect was measured with, and the clip above is derived from
+ * it. Showing the page in its authored position instead would shoot a different rectangle.
+ */
+async function showSwitcherPageFor(session, rec) {
+  return session.evaluate(
+    `(function () {
+      window.__h2uBakePageSaved = null;
+      var el = document.querySelector('[data-h2u-idx="${rec.i}"]');
+      if (!el) return 0;
+      var page = null;
+      for (var node = el; node && node.parentElement; node = node.parentElement) {
+        if (node.parentElement.hasAttribute('data-ue-switcher')) { page = node; break; }
+      }
+      if (!page) return 0;
+      var kids = page.parentElement.children;
+
+      // Every sibling's inline style as it is NOW, taken before anything is touched, so the restore
+      // is exact.
+      var saved = [];
+      for (var k = 0; k < kids.length; k++) saved.push({ el: kids[k], cssText: kids[k].style.cssText });
+
+      // A page the browser is ALREADY showing needs nothing done to it: its geometry is the one the
+      // snapshot measured. Re-styling it was a real bug - with no visible sibling left to copy from,
+      // the code fell back to display:block and un-centred that page's own controls.
+      var alreadyVisible = window.getComputedStyle(page).display !== 'none';
+      var explicit = page.getAttribute('data-ue-display');
+      var added = [];
+
+      if (!alreadyVisible) {
+        if (explicit) {
+          // The page states its visible display (the WBP->HTML writer emits this), so take it as given.
+          page.style.display = explicit;
+        } else {
+          // A page is usually hidden by one rule and shown by an ACTIVE VARIANT of it
+          // (.upage{display:none} / .upage.on{display:flex;align-items:center}). Copying the classes
+          // the visible sibling has brings the whole active block; forcing the display alone leaves
+          // align-items at its default (stretch) and the controls move - measured on
+          // _repro/switcher_bake.html, a flex-centred input the browser draws at y=30 measured at
+          // y=0, and since every capture clips the rectangle derived from that measurement, the bake
+          // then shot the page background instead of the control.
+          for (var i = 0; i < kids.length; i++) {
+            if (kids[i] === page) continue;
+            if (window.getComputedStyle(kids[i]).display === 'none') continue;
+            var want = String(kids[i].className || '').split(/\\s+/).filter(Boolean);
+            var have = String(page.className || '').split(/\\s+/).filter(Boolean);
+            for (var w = 0; w < want.length; w++) {
+              if (have.indexOf(want[w]) < 0) { page.classList.add(want[w]); added.push(want[w]); }
+            }
+            break;
+          }
+        }
+        // Pinned the way the snapshot's reveal pins a hidden page while measuring it, so the clip
+        // rectangle derived from that measurement still frames this page.
+        page.style.position = 'absolute';
+        page.style.left = '0px';
+        page.style.right = '0px';
+        page.style.top = '0px';
+        page.style.visibility = 'visible';
+        page.style.pointerEvents = 'none';
+      }
+
+      for (var m = 0; m < kids.length; m++) {
+        if (kids[m] !== page) kids[m].style.display = 'none';
+      }
+      window.__h2uBakePageSaved = { pages: saved, page: page, classes: added };
+      return 1;
+    })()`,
+    { returnByValue: true }
+  );
+}
+
+async function restoreSwitcherPageFor(session) {
+  await session.evaluate(
+    `(function () {
+      var saved = window.__h2uBakePageSaved;
+      if (!saved) return 0;
+      for (var i = 0; i < saved.pages.length; i++) saved.pages[i].el.style.cssText = saved.pages[i].cssText;
+      for (var c = 0; c < saved.classes.length; c++) saved.page.classList.remove(saved.classes[c]);
+      window.__h2uBakePageSaved = null;
+      return 1;
+    })()`,
+    { returnByValue: true }
+  );
+}
+
 async function setPseudoState(session, nodeId, classes) {
   await session.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: classes });
 }
@@ -574,6 +675,35 @@ async function bakeControls(options) {
       const imageSize = [Math.round(rect[2]), Math.round(rect[3])];
 
       try {
+        // A switcher's non-current page is display:none; without this the clip below captures the
+        // page background instead of the control (see showSwitcherPageFor).
+        if (kind) {
+          const reveal = await showSwitcherPageFor(session, rec).catch((err) => {
+            warn(`bake: switcher reveal for '${label}' threw (${err.message})`);
+            return -1;
+          });
+          if (process.env.HTML2UMG_DEBUG_BAKE) {
+            const probe = await session.evaluate(
+              `(function () {
+                var el = document.querySelector('[data-h2u-idx="${rec.i}"]');
+                if (!el) return 'no element';
+                var r = el.getBoundingClientRect();
+                var cs = getComputedStyle(el);
+                var page = null;
+                for (var n = el; n && n.parentElement; n = n.parentElement) {
+                  if (n.parentElement.hasAttribute('data-ue-switcher')) { page = n; break; }
+                }
+                var ps = page ? getComputedStyle(page) : null;
+                return 'rect=' + [r.left, r.top, r.width, r.height].map(function (v) { return Math.round(v * 10) / 10; }).join(',')
+                  + ' rec=' + ${JSON.stringify(rec.rect)}
+                  + ' el=' + cs.display + '/' + cs.visibility + '/' + cs.opacity
+                  + ' page=' + (ps ? ps.display + '/' + ps.visibility + '/' + ps.position : 'none');
+              })()`,
+              { returnByValue: true }
+            );
+            warn(`bake: probe '${label}' reveal=${reveal} ${probe}`);
+          }
+        }
         if (kind === 'select') {
           output.set(rec.i, { kind, parts: await bakeSelect(session, nodeId, rec, baseClip, localScale, radii, register, label, warn, originalValues) });
         } else if (kind === 'checkbox') {
@@ -601,6 +731,7 @@ async function bakeControls(options) {
         await setPseudoState(session, nodeId, []).catch(() => {});
         await restore(session, rec, originalValues).catch(() => {});
         await clearCss(session).catch(() => {});
+        await restoreSwitcherPageFor(session).catch(() => {});
       }
       if (output.get(rec.i)) output.get(rec.i).imageSize = imageSize;
     }

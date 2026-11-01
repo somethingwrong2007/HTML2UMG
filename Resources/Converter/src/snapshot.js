@@ -788,6 +788,68 @@ function pageSnapshot(opts) {
   // measurement (position:absolute + visibility:hidden, so they do not disturb the visible page),
   // then everything is restored exactly as it was.
   var revealedSwitchers = [];
+  /**
+   * Make a hidden page look like the CURRENT one, for measurement only.
+   *
+   * A page is normally hidden by one rule and shown by an ACTIVE VARIANT of it, so "the display of a
+   * visible sibling" is only part of the answer:
+   *
+   *   .upage     { display:none }
+   *   .upage.on  { display:flex; flex-direction:row; align-items:center; gap:20px }
+   *
+   * Forcing display:flex alone leaves align-items at its default (stretch) and the controls inside the
+   * page move: measured on _repro/switcher_bake.html, an input the browser flex-centres at y=30
+   * measured at y=0. Everything the bake clips afterwards is derived from that measurement, so the
+   * bake then shot the page background instead of the control.
+   *
+   * So copy the classes the shown sibling has and this page lacks - that brings the whole active block,
+   * not just its display - and remember them for the restore. data-ue-display, when the page states its
+   * visible display explicitly, skips the guess entirely.
+   */
+  var activatePageForMeasurement = function (page, siblings) {
+    var explicit = page.getAttribute('data-ue-display');
+    var added = [];
+    var stripped = [];
+    var active = null;
+    var display = explicit || null;
+
+    if (!display) {
+      for (var i = 0; i < siblings.length; i += 1) {
+        var sib = siblings[i];
+        if (sib === page) continue;
+        var sibDisplay = window.getComputedStyle(sib).display;
+        if (!sibDisplay || sibDisplay === 'none') continue;
+        active = sib;
+        display = sibDisplay;
+        break;
+      }
+    }
+
+    // Swap the ACTIVE classes rather than forcing a display: the page's own stylesheet then decides
+    // what "current" looks like. `.upage{display:none}` + `.upage.on{display:flex;align-items:center}`
+    // is the usual shape, and forcing display:flex alone leaves align-items at its default (stretch),
+    // so the controls inside the page move (measured: an input the browser flex-centres at y=30
+    // measured at y=0 - and everything the bake clips is derived from this measurement).
+    //
+    // The classes this page LACKS are exactly what makes the active page current, so copying them
+    // gives the hidden page the styling the browser would give it. The ACTIVE page is deliberately
+    // left alone: the snapshot measures EVERY page in one traversal, so taking the active classes off
+    // it would hide the page the browser is actually showing (measured: PageA disappeared from the
+    // records entirely). Both lists are read before anything is touched.
+    if (active) {
+      var pageOwn = String(page.className || '').split(/\s+/).filter(Boolean);
+      var activeOwn = String(active.className || '').split(/\s+/).filter(Boolean);
+      for (var w = 0; w < activeOwn.length; w += 1) {
+        if (pageOwn.indexOf(activeOwn[w]) < 0) {
+          page.classList.add(activeOwn[w]);
+          added.push(activeOwn[w]);
+        }
+      }
+    }
+
+    return { display: display || 'block', added: added };
+  };
+
   var revealSwitcherPages = function () {
     var switchers = document.querySelectorAll('[data-ue-switcher]');
     for (var s = 0; s < switchers.length; s += 1) {
@@ -808,11 +870,10 @@ function pageSnapshot(opts) {
           position: before.position,
           visibility: before.visibility
         };
-        // A hidden page often declares its own display, and overriding it with "block" would lose
-        // e.g. flex-direction: an HBox page came back as a VBox. data-ue-display lets the author (and
-        // the WBP->HTML writer) state the display the page has while it is visible.
-        const declaredDisplay = kid.getAttribute('data-ue-display');
-        kid.style.display = declaredDisplay || 'block';
+        const activation = activatePageForMeasurement(kid, kids);
+        kid.__h2uVisibleDisplay = activation.display;
+        kid.__h2uAddedClasses = activation.added;
+        kid.style.display = activation.display;
         // Both left and right pinned: an absolutely positioned box with auto width would
         // shrink-to-fit (measured 131px instead of the 520px page width).
         kid.style.position = 'absolute';
@@ -836,6 +897,12 @@ function pageSnapshot(opts) {
       var hidden = revealedSwitchers[s].hidden;
       for (var c = 0; c < hidden.length; c += 1) {
         hidden[c].el.style.cssText = hidden[c].cssText;
+        // The page may have been given the active sibling's classes to measure it; take them back off.
+        var added = hidden[c].el.__h2uAddedClasses;
+        if (added) {
+          for (var a = 0; a < added.length; a += 1) hidden[c].el.classList.remove(added[a]);
+          hidden[c].el.__h2uAddedClasses = null;
+        }
         hidden[c].el.__h2uWasHidden = false;
       }
     }
@@ -963,10 +1030,9 @@ function pageSnapshot(opts) {
     // be measured. Report the styles the author actually wrote, otherwise the converter treats the
     // page as an absolutely positioned child of a canvas instead of a plain block page.
     if (el.__h2uWasHidden && el.__h2uOrig) {
-      // A page hidden with display:none becomes a block once the hiding is lifted, which is what the
-      // author's rule means - unless the page says otherwise with data-ue-display. Without that a
-      // flex page was recorded as display:block and came back as a VerticalBox instead of an HBox.
-      const declaredDisplay = el.getAttribute ? el.getAttribute('data-ue-display') : null;
+      // Report the display that was actually used while measuring, so the mapper and the bake agree
+      // with the layout the browser produced (see visibleDisplayOf).
+      const declaredDisplay = el.__h2uVisibleDisplay || (el.getAttribute ? el.getAttribute('data-ue-display') : null);
       rec.cs.display = declaredDisplay || (el.__h2uOrig.display === 'none' ? 'block' : el.__h2uOrig.display || 'block');
       rec.cs.position = el.__h2uOrig.position || 'static';
       rec.cs.visibility = el.__h2uOrig.visibility || 'visible';

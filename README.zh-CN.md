@@ -671,6 +671,7 @@ UnrealEditor.exe <工程>.uproject ^
 | 重导时编辑器 Fatal：`Renaming an object (...) on top of an existing object` | 退休控件的改名不再用自增计数器（它每次导入都会重置，而上一轮的垃圾对象还占着 `X_H2URetired_0`），改用 `MakeUniqueObjectName` 要一个真正空闲的名字 |
 | 切页只在第一页 | 容器没加 `data-ue-switcher`；或项目没启用 CommonUI 却期望切页动画（日志会说明回退到 `WidgetSwitcher`） |
 | 隐藏页在 UMG 里是空的 | 该页不是 `data-ue-switcher` 的子元素，转换器没有理由去测量它 |
+| 切换页里的控件烘出的贴图是空白 | 烘焙该控件的状态贴图前，会先把它所属的切换页**切成当前页**（复制当前页的 active 类、隐藏同级页），烘完恢复原状；快照测量时同样处理。作者建议用 `.page{display:none}` + `.page.active{display:flex;…}` 的写法（整套"当前页"样式都放在 active 类里），或用 `data-ue-display` 显式声明"可见时的 display" |
 | 转出来的名字还是太长 | 那是旧版本产物；`data-ue-name` 会原样成为控件名，其余自动名只带一个角色后缀 |
 
 ## 目录结构
