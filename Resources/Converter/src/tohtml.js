@@ -184,9 +184,19 @@ class Generator {
       const isPoint = Math.abs(min - max) < 1e-6;
       if (isPoint) {
         const offset = round(off - size * al, 2);
+        if (Math.abs(min - 1) < 1e-6) {
+          // Pinned to the FAR edge: emit a bare px inset from that edge, not "left: calc(100% - Npx)".
+          // They describe the same position, but the converter reads a declared edge as a px anchor
+          // only when it is a plain px/percent value - a calc() fails that test and it falls back to a
+          // RATIO measured from the design (0.6969 instead of 1), so the element then scaled with the
+          // viewport instead of staying pinned. The inset is -(off) + size*(al - 1): for the usual
+          // al=0 that is -(Left + size), which needs no knowledge of the parent's size.
+          out.push(inset + ': ' + px(round(-off + size * (al - 1), 2)));
+          if (!autoSize) out.push(sizeProp + ': ' + px(size));
+          return;
+        }
         if (Math.abs(offset) < 0.005) out.push(lead + ': 0');
         else if (Math.abs(min) < 1e-6) out.push(lead + ': ' + px(offset));
-        else if (Math.abs(min - 1) < 1e-6) out.push(lead + ': ' + calc(100, offset));
         else out.push(lead + ': ' + calc(round(min * 100, 4), offset));
         if (!autoSize) out.push(sizeProp + ': ' + px(size));
         return;

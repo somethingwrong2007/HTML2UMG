@@ -4842,7 +4842,14 @@ class Mapper {
       brush.drawAs = hasRadius || outlined ? 'RoundedBox' : 'Box';
     }
     if (hasRadius || (outlined && brush.drawAs === 'RoundedBox')) brush.cornerRadii = radii;
-    brush.tint = style.backgroundColor || [0, 0, 0, 0];
+    // A texture is multiplied by the tint, so an element whose only paint is a background-image must
+    // keep a WHITE tint. Assigning the background colour unconditionally made it [0,0,0,0] whenever
+    // the design declares no background colour (the normal case for an icon: background-image plus a
+    // transparent colour), and a texture multiplied by transparent black is invisible - measured on a
+    // round-tripped WBP->HTML: the export carried TintColor [1,1,1,1] and the re-import [0,0,0,0].
+    // A declared opaque colour under an image is kept as the multiply (a documented approximation).
+    const opaqueBg = style.backgroundColor && style.backgroundColor[3] > 0.002 ? style.backgroundColor : null;
+    brush.tint = texture ? (opaqueBg || [1, 1, 1, 1]) : (style.backgroundColor || [0, 0, 0, 0]);
 
     if (outlined) {
       brush.outlineWidth = effective.width;
