@@ -261,10 +261,10 @@ class SlateEmitter {
         const b = nodeBrush || N.propsBrush(props, 'Background');
         let head = 'SNew(SBorder)';
         if (b) head += '\n' + indent + '.BorderImage(' + br(b) + ')';
-        const pad = N.pget(props, 'Padding');
-        if (Array.isArray(pad) && pad.some((v) => v)) {
-          head += '\n' + indent + '.Padding(FMargin(' + N.f(pad[0]) + ', ' + N.f(pad[1]) + ', ' + N.f(pad[2]) + ', ' + N.f(pad[3]) + '))';
-        }
+        // Always explicit: a Border that omits .Padding() did not land where the design put it
+        // (measured: the root border inset its child by 2px on every side, shifting the whole page).
+        const pad = Array.isArray(N.pget(props, 'Padding')) ? N.pget(props, 'Padding') : [0, 0, 0, 0];
+        head += '\n' + indent + '.Padding(FMargin(' + N.f(pad[0] || 0) + ', ' + N.f(pad[1] || 0) + ', ' + N.f(pad[2] || 0) + ', ' + N.f(pad[3] || 0) + '))';
         return wrapChild(head, inner);
       }
       if (/SizeBox/.test(cls)) {

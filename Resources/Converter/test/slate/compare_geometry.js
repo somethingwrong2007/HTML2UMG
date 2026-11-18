@@ -98,7 +98,12 @@ function main() {
       used.add(best);
       const w = list[best];
       maxPos = Math.max(maxPos, Math.abs(w.absX - ref.rect[0]), Math.abs(w.absY - ref.rect[1]));
-      maxSize = Math.max(maxSize, Math.abs(w.localW - ref.rect[2]), Math.abs(w.localH - ref.rect[3]));
+      // A text widget is content-sized in Slate (and in UMG): the design rect is the element's BLOCK
+      // width, the widget is as wide as its glyphs and aligned inside the slot. Comparing those widths
+      // reports a huge "error" that is not a layout error, so text is compared on position only.
+      if (slateType !== 'STextBlock') {
+        maxSize = Math.max(maxSize, Math.abs(w.localW - ref.rect[2]), Math.abs(w.localH - ref.rect[3]));
+      }
       compared += 1;
       n += 1;
     }
