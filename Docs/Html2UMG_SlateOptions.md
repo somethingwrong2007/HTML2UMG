@@ -145,3 +145,27 @@ Epic 官方立场：游戏内 UI **首选 UMG**，Slate 主要面向编辑器/�
 
 剩下的差异是**布局**不是颜色：下拉框占位、复选框行尺寸、盒内控件高度、按钮宽度。根因仍是
 §7 那条——layout.json 不携带控件 rect。
+
+## 10. 尺寸信息补进 layout.json（第一步已做）
+
+`mapper.makeNode()` 现在给每个节点输出 `rect: [x, y, w, h]`（CSS px，来自快照测量）。UMG 不需要它
+（槽里已经带尺寸），但 Slate 需要：盒内自动排布的控件没有内在尺寸，就会退回 Slate 默认样式尺寸。
+
+生成器据此把每个节点钉到测量矩形上（`SBox::WidthOverride/HeightOverride`）。**钉哪个轴要看父面板**：
+
+| 父面板 | 自动定尺寸的轴 | 需要钉 |
+|---|---|---|
+| VerticalBox | 高度（或 Fill） | `HeightOverride`；宽度在 HAlign=Fill 时由父级给 |
+| HorizontalBox | 宽度（或 Fill） | `WidthOverride`；高度由最高兄弟决定 |
+| Overlay / 单子级 | 两个轴都由自身 desired size | 两个都钉 |
+| CanvasPanel | 槽已经带尺寸 | 不钉 |
+
+注意一个坑：HorizontalBox 里的 `VerticalAlignment: Fill` 意思是“对齐到行高”，**不是**“父级会给高度”，
+所以不能用对齐值来判断是否需要钉。
+
+实测（`test/05-controls` @1920x1080）：差异 8.13% → 8.34%，结构边缘 38.5% → 38.9%。按钮、下拉框、
+输入框的尺寸明显改善；但**行的垂直位置仍在漂**，复选框行与右卡片两个数值仍不对。
+
+下一步需要的不是继续调参，而是**instrumentation**：给临时渲染命令加一个几何 dump（遍历 `SWidget` 的
+`GetDesiredSize()`/`GetCachedGeometry()`，和 JSON 的 `rect` 逐节点对比），才能看出是哪一层的
+高度差被累积。盲调已经证明无效（钉了全部节点反而略差）。

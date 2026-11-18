@@ -55,6 +55,7 @@ class SlateEmitter {
     this.initLines = [];
     this.styleCount = 0;
     this.comboCount = 0;
+    this.parentMode = 'single';
     this.comboInits = [];
     this.usesCombo = false;
     this.texByKey = new Map();
@@ -160,8 +161,10 @@ class SlateEmitter {
     if (!kids.length) return '';
     const parts = [];
     const pad = indent + '    ';
+    const previousMode = this.parentMode;
+    this.parentMode = mode;
     for (const kid of kids) {
-      const body = pad + this.node(kid, pad);
+      const body = pad + this.pin(kid, pad, this.node(kid, pad));
       if (mode === 'single') {
         parts.push(body);
         continue;
@@ -184,6 +187,7 @@ class SlateEmitter {
         parts.push(indent + '+ SScrollBox::Slot()\n' + indent + '  [\n' + body + '\n' + indent + '  ]');
       }
     }
+    this.parentMode = previousMode;
     if (mode === 'single' && kids.length > 1) {
       // The design stacks several children inside a single-child container: stack them explicitly
       // instead of silently dropping all but the first.
@@ -208,6 +212,7 @@ class SlateEmitter {
     // properties (Background.*). Reading only properties silently dropped every container fill in the
     // converter dialect, which drew the whole page black because nothing was painted underneath.
     const nodeBrush = N.normBrush(node.brush);
+
 
     // A single-child container takes its child inside [...]; a panel takes "+ Slot()[...]" lines
     // directly after the SNew, which is how the engine itself writes them.
@@ -313,7 +318,7 @@ class SlateEmitter {
       const handle = N.pget(props, 'SliderHandleColor');
       if (Array.isArray(handle)) out += '\n' + indent + '.SliderHandleColor(' + N.lc(handle) + ')';
       N.warn(this.warnings, 'slider ' + name + ': FSliderStyle bar/thumb brushes are not reproduced (colours come from the layout)');
-      return out;
+      return (out);
     }
 
     if (kind === 'progress') {
@@ -322,7 +327,7 @@ class SlateEmitter {
       if (Number.isFinite(pct)) out += '\n' + indent + '.Percent(' + N.f(pct) + ')';
       const fill = N.pget(props, 'FillColorAndOpacity');
       if (Array.isArray(fill)) out += '\n' + indent + '.FillColorAndOpacity(' + N.lc(fill) + ')';
-      return out;
+      return (out);
     }
 
     if (kind === 'edit') {
@@ -330,7 +335,7 @@ class SlateEmitter {
       const text = N.pget(props, 'Text');
       if (typeof text === 'string') out += '\n' + indent + '.Text(FText::FromString(' + N.txt(text) + '))';
       N.warn(this.warnings, 'editable text box ' + name + ' uses the default style (its baked frame is not reproduced)');
-      return out;
+      return (out);
     }
 
     if (kind === 'spin') {
@@ -339,7 +344,7 @@ class SlateEmitter {
         const v = Number(N.pget(props, key));
         if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
       }
-      return out;
+      return (out);
     }
 
     if (kind === 'check') {
@@ -349,14 +354,14 @@ class SlateEmitter {
       let out = 'SNew(SCheckBox)';
       out += '\n' + indent + '.IsChecked(' + checked + ')';
       N.warn(this.warnings, 'checkbox ' + name + ': FCheckBoxStyle track/knob brushes are not reproduced (default style)');
-      return out;
+      return (out);
     }
 
     if (kind === 'combo') {
       const options = N.pget(props, 'DefaultOptions');
       if (!Array.isArray(options) || !options.length) {
         N.warn(this.warnings, 'combo box ' + name + ' has no options in the layout; emitted as an empty SComboBox');
-        return 'SNew(SComboBox<TSharedPtr<FString>>)';
+        return ('SNew(SComboBox<TSharedPtr<FString>>)');
       }
       const slotName = 'ComboOptions' + this.comboCount;
       this.comboCount += 1;
@@ -371,7 +376,7 @@ class SlateEmitter {
       // placeholder; the layout's SelectedOption is added first, so index 0 is the selected one.
       out += '\n' + indent + '.InitiallySelectedItem(' + slotName + '.Num() > 0 ? ' + slotName + '[0] : TSharedPtr<FString>())';
       out += '\n' + indent + '.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) { return SNew(STextBlock).Text(FText::FromString(Item.IsValid() ? *Item : FString())); })';
-      return out;
+      return (out);
     }
 
     N.warn(this.warnings, 'class ' + cls + ' (' + name + ') has no Slate mapping; emitted as an SBox container');
@@ -385,6 +390,49 @@ class SlateEmitter {
       out.push('    TArray<TSharedPtr<FString>> ComboOptions' + i + ';');
     }
     return out;
+  }
+
+  /**
+   * Pin one node to the box it measured at.
+   *
+   * The measured geometry IS the specification for a design-to-code generator, so pinning every node
+   * is what removes the drift Slate layout introduces when a widget has no intrinsic size (a checkbox
+   * row was 21px in the design and 32px in the render, and it accumulated down the page).
+   */
+  pin(nodeArg, indent, expr) {
+    const r = nodeArg.rect;
+    if (!Array.isArray(r) || r.length < 4) return expr;
+    const slot = nodeArg.slot || {};
+    const rule = (slot.Size && slot.Size.SizeRule) || 'Automatic';
+    // Which axis the PANEL sizes automatically decides what has to be pinned:
+    //   VerticalBox   -> height is auto (or Fill), width comes from the parent when aligned Fill
+    //   HorizontalBox -> width is auto (or Fill), height comes from the tallest sibling
+    //   Overlay/single-> the child is sized by its own desired size on both axes
+    //   Canvas        -> the slot already carries the size
+    // "VerticalAlignment: Fill" inside a HorizontalBox means "match the row height", NOT "the parent
+    // gives me a height", so alignment alone is not a usable test.
+    const mode = this.parentMode;
+    let wantW = false;
+    let wantH = false;
+    if (mode === 'hbox') {
+      wantW = rule !== 'Fill';
+      wantH = slot.VerticalAlignment !== 'Fill';
+    } else if (mode === 'vbox') {
+      wantH = rule !== 'Fill';
+      wantW = slot.HorizontalAlignment !== 'Fill';
+    } else if (mode === 'overlay' || mode === 'single') {
+      wantW = true;
+      wantH = true;
+    }
+    let head = 'SNew(SBox)';
+    if (wantW && Number(r[2]) > 0) {
+      head += '\n' + indent + '.WidthOverride(' + N.f(r[2]) + ')';
+    }
+    if (wantH && Number(r[3]) > 0) {
+      head += '\n' + indent + '.HeightOverride(' + N.f(r[3]) + ')';
+    }
+    const body = indent + '    ' + expr.split('\n').join('\n' + indent + '    ');
+    return head + '\n' + indent + '[\n' + body + '\n' + indent + ']';
   }
 
   build() {

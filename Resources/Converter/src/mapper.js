@@ -2470,6 +2470,11 @@ class Mapper {
   makeNode(name, cls, rec, synthetic) {
     const node = { name, class: cls };
     if (rec) node.source = this.label(rec);
+    // The measured box of the element, in CSS px [x, y, w, h]. UMG does not need it (a slot already
+    // carries the size wherever CSS made it layout-relevant), but a Slate renderer does: a control
+    // that auto-arranges inside a box otherwise falls back to Slate's default style size and the whole
+    // page drifts. Emitted for every node so a consumer can pin it.
+    if (rec && Array.isArray(rec.rect)) node.rect = rec.rect.map((v) => V.round(v, 2));
     if (synthetic) node.variable = false;
     return node;
   }
