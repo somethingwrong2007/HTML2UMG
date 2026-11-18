@@ -94,3 +94,27 @@ ScrollBox / TextBlock / Image / Button / Spacer / 各种 Switcher。无法映射
 
 Epic 官方立场：游戏内 UI **首选 UMG**，Slate 主要面向编辑器/工具层。也就是说这条 Slate 路线
 的合理定位是：**工具 UI、无 UMG 依赖的程序化 UI、或者需要一个纯代码交付的界面**。
+
+## 7. 像素验证（已打通，尚未对齐）
+
+渲染链路已证明可行：`FHtml2UMGFidelity::RenderSlateTreeToFile(TSharedRef<SWidget>, ...)` 把任意 Slate 树
+画成 PNG（`FWidgetRenderer::DrawWidget` 本来就吃 `SWidget`），配一个临时命令 `Html2UMG.RenderSlatePreview`
+就能对拍。`test/05-controls` 实测 **1920x1080 出图成功**。
+
+当前差异与原因（看图确认，不是猜）：
+
+| 现象 | 原因 |
+|---|---|
+| 文字曾被截掉左侧几个字 | 未映射的原生控件塌成 0 尺寸空盒，把行内宽度挤没了；补上控件映射后**已修复** |
+| 下拉框显示「未提供内容」 | `SComboBox` 的 `InitiallySelectedItem` 仍为空，待定位（疑似 Construct 时 `OptionsSource` 的时序） |
+| 复选框行 / 按钮尺寸偏小 | layout.json **不携带控件 rect**：设计尺寸只体现在画布槽与 SizeBox 上，盒内自动排布的控件高度退回 Slate 默认样式尺寸 |
+| 右卡片「98%」「12」两个值不显示 | 待查（同属盒内自动排布 + 文本尺寸问题） |
+| 行间垂直间距偏差累积 | 同上：每行高度差几像素会累积 |
+
+**这条差异的根因是信息缺失，不是生成器写错**：要让 Slate 精确对齐，layout.json 需要额外携带**每个控件的测量尺寸**
+（或转换器在盒内控件外面套一个带 `MinDesiredHeight` 的 SizeBox）。这是下一步的真正工作。
+
+## 8. 一次实测的教训
+
+第一次编译失败不是生成器的问题，而是插件 `Build.cs` 少了 **InputCore**：`SEditableTextBox` / `SSpinBox` /
+`SComboBox` 会实例化并引用 `EKeys`，链接期报 10 个未解析符号。加上依赖即通过——做 Slate 输出必须连带处理模块依赖。

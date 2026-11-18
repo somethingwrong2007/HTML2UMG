@@ -489,6 +489,110 @@ bool FHtml2UMGFidelity::RenderWidgetToFile(const FString& BlueprintPath, FVector
 	UE_LOG(LogHtml2UMG, Log, TEXT("Html2UMG fidelity: rendered '%s' to '%s' (%dx%d)."), *BlueprintPath, *OutputFile, Width, Height);
 	return true;
 }
+bool FHtml2UMGFidelity::RenderSlateTreeToFile(const TSharedRef<SWidget>& SlateWidget, FVector2D Size, const FString& OutPng, FString& OutError)
+{
+	OutError.Reset();
+
+	if (OutPng.IsEmpty())
+	{
+		OutError = TEXT("No output png path was given.");
+		return false;
+	}
+	if (!FApp::CanEverRender())
+	{
+		OutError = TEXT("Rendering is disabled for this process, so the Slate tree cannot be drawn. ")
+			TEXT("Run the editor with -RenderOffscreen and trigger the render through -ExecCmds.");
+		return false;
+	}
+	if (!FSlateApplication::IsInitialized() || FSlateApplication::Get().GetRenderer() == nullptr)
+	{
+		OutError = TEXT("No Slate renderer is initialised in this process (the engine skips it for -run= ")
+			TEXT("commandlets), so the Slate tree cannot be drawn. Use the editor process with -RenderOffscreen.");
+		return false;
+	}
+
+	const int32 Width = FMath::Clamp(FMath::RoundToInt32(Size.X), 1, MaxRenderDimension);
+	const int32 Height = FMath::Clamp(FMath::RoundToInt32(Size.Y), 1, MaxRenderDimension);
+	const FVector2D DrawSize(static_cast<float>(Width), static_cast<float>(Height));
+
+	UTextureRenderTarget2D* RenderTarget = FWidgetRenderer::CreateTargetFor(DrawSize, TF_Nearest, /*bUseGammaCorrection=*/ true);
+	if (RenderTarget == nullptr)
+	{
+		OutError = TEXT("Could not create a render target for the Slate tree.");
+		return false;
+	}
+
+	FWidgetRenderer WidgetRenderer(/*bUseGammaCorrection=*/ true, /*bInClearTarget=*/ true);
+	// Several draws, so paint-time invalidation (STextBlock's re-wrap) is measured again - the same
+	// reason the UMG path draws more than once.
+	const int32 DrawCount = FMath::Max(1, CVarHtml2UMGRenderFrames.GetValueOnGameThread());
+	for (int32 DrawIndex = 0; DrawIndex < DrawCount; ++DrawIndex)
+	{
+		WidgetRenderer.DrawWidget(RenderTarget, SlateWidget, DrawSize, /*DeltaTime=*/ 0.0f, /*bDeferRenderTargetUpdate=*/ false);
+	}
+	FlushRenderingCommands();
+
+	FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+	if (RenderTargetResource == nullptr)
+	{
+		OutError = TEXT("The render target has no resource to read pixels from.");
+		return false;
+	}
+
+	TArray<FColor> Pixels;
+	const FReadSurfaceDataFlags ReadFlags;
+	if (!RenderTargetResource->ReadPixels(Pixels, ReadFlags, FIntRect(0, 0, Width, Height)) || Pixels.Num() < Width * Height)
+	{
+		OutError = TEXT("Reading the rendered pixels back failed.");
+		return false;
+	}
+
+	// Same correction as RenderWidgetToFile: the render target carries gamma correction, so the bytes
+	// come back sRGB-encoded on top of the transfer function the brush colours were authored with.
+	// Linearising them keeps the png byte-compatible with the browser reference.
+	const auto UndoExtraGamma = [](uint8 In)
+	{
+		const float Normalized = static_cast<float>(In) / 255.0f;
+		const float Linear = Normalized <= 0.04045f
+			? Normalized / 12.92f
+			: FMath::Pow((Normalized + 0.055f) / 1.055f, 2.4f);
+		return static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Linear * 255.0f), 0, 255));
+	};
+	for (FColor& Pixel : Pixels)
+	{
+		Pixel.R = UndoExtraGamma(Pixel.R);
+		Pixel.G = UndoExtraGamma(Pixel.G);
+		Pixel.B = UndoExtraGamma(Pixel.B);
+	}
+
+	TArray64<uint8> PngBytes;
+	FImageUtils::PNGCompressImageArray(
+		Width,
+		Height,
+		TArrayView64<const FColor>(Pixels.GetData(), static_cast<int64>(Width) * Height),
+		PngBytes);
+	if (PngBytes.Num() == 0)
+	{
+		OutError = TEXT("PNG encoding produced no data.");
+		return false;
+	}
+
+	const FString OutputFile = FPaths::ConvertRelativePathToFull(OutPng);
+	const FString OutputDir = FPaths::GetPath(OutputFile);
+	if (!OutputDir.IsEmpty())
+	{
+		IFileManager::Get().MakeDirectory(*OutputDir, true);
+	}
+	if (!FFileHelper::SaveArrayToFile(PngBytes, *OutputFile))
+	{
+		OutError = FString::Printf(TEXT("Could not write the png to '%s'."), *OutputFile);
+		return false;
+	}
+
+	UE_LOG(LogHtml2UMG, Log, TEXT("Html2UMG fidelity: rendered a Slate tree to '%s' (%dx%d)."), *OutputFile, Width, Height);
+	return true;
+}
+
 
 namespace
 {

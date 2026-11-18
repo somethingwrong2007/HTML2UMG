@@ -34,6 +34,12 @@ function kindOf(cls) {
   if (/Image/.test(c)) return 'image';
   if (/Spacer/.test(c)) return 'spacer';
   if (/Button/.test(c)) return 'button';
+  if (/ComboBox/.test(c)) return 'combo';
+  if (/CheckBox/.test(c)) return 'check';
+  if (/Slider/.test(c)) return 'slider';
+  if (/ProgressBar/.test(c)) return 'progress';
+  if (/EditableTextBox/.test(c)) return 'edit';
+  if (/SpinBox/.test(c)) return 'spin';
   if (/Border|SizeBox|ScaleBox|NamedSlot/.test(c)) return 'single';
   return 'other';
 }
@@ -48,6 +54,9 @@ class SlateEmitter {
     this.brushExprs = [];
     this.initLines = [];
     this.styleCount = 0;
+    this.comboCount = 0;
+    this.comboInits = [];
+    this.usesCombo = false;
     this.texByKey = new Map();
     const assets = this.layout.assets || {};
     for (const t of assets.textures || []) {
@@ -289,14 +298,99 @@ class SlateEmitter {
     }
     if (kind === 'scroll') return wrapSlots('SNew(SScrollBox)', this.children(node, indent + '    ', 'scroll'));
 
+    if (kind === 'slider') {
+      let out = 'SNew(SSlider)';
+      for (const key of ['Value', 'MinValue', 'MaxValue']) {
+        const v = Number(N.pget(props, key));
+        if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
+      }
+      const bar = N.pget(props, 'SliderBarColor');
+      if (Array.isArray(bar)) out += '\n' + indent + '.SliderBarColor(' + N.lc(bar) + ')';
+      const handle = N.pget(props, 'SliderHandleColor');
+      if (Array.isArray(handle)) out += '\n' + indent + '.SliderHandleColor(' + N.lc(handle) + ')';
+      N.warn(this.warnings, 'slider ' + name + ': FSliderStyle bar/thumb brushes are not reproduced (colours come from the layout)');
+      return out;
+    }
+
+    if (kind === 'progress') {
+      let out = 'SNew(SProgressBar)';
+      const pct = Number(N.pget(props, 'Percent'));
+      if (Number.isFinite(pct)) out += '\n' + indent + '.Percent(' + N.f(pct) + ')';
+      const fill = N.pget(props, 'FillColorAndOpacity');
+      if (Array.isArray(fill)) out += '\n' + indent + '.FillColorAndOpacity(' + N.lc(fill) + ')';
+      return out;
+    }
+
+    if (kind === 'edit') {
+      let out = 'SNew(SEditableTextBox)';
+      const text = N.pget(props, 'Text');
+      if (typeof text === 'string') out += '\n' + indent + '.Text(FText::FromString(' + N.txt(text) + '))';
+      N.warn(this.warnings, 'editable text box ' + name + ' uses the default style (its baked frame is not reproduced)');
+      return out;
+    }
+
+    if (kind === 'spin') {
+      let out = 'SNew(SSpinBox<float>)';
+      for (const key of ['Value', 'MinValue', 'MaxValue', 'Delta']) {
+        const v = Number(N.pget(props, key));
+        if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
+      }
+      return out;
+    }
+
+    if (kind === 'check') {
+      const state = String(N.pget(props, 'CheckedState') || 'Unchecked');
+      const checked = state === 'Checked' ? 'ECheckBoxState::Checked'
+        : (state === 'Undetermined' ? 'ECheckBoxState::Undetermined' : 'ECheckBoxState::Unchecked');
+      let out = 'SNew(SCheckBox)';
+      out += '\n' + indent + '.IsChecked(' + checked + ')';
+      N.warn(this.warnings, 'checkbox ' + name + ': FCheckBoxStyle track/knob brushes are not reproduced (default style)');
+      return out;
+    }
+
+    if (kind === 'combo') {
+      const options = N.pget(props, 'DefaultOptions');
+      if (!Array.isArray(options) || !options.length) {
+        N.warn(this.warnings, 'combo box ' + name + ' has no options in the layout; emitted as an empty SComboBox');
+        return 'SNew(SComboBox<TSharedPtr<FString>>)';
+      }
+      const slotName = 'ComboOptions' + this.comboCount;
+      this.comboCount += 1;
+      this.comboInits.push(slotName + '.Add(MakeShared<FString>(' + N.txt(String(N.pget(props, 'SelectedOption') || options[0])) + '));');
+      for (const opt of options) {
+        this.comboInits.push(slotName + '.Add(MakeShared<FString>(' + N.txt(String(opt)) + '));');
+      }
+      this.usesCombo = true;
+      let out = 'SNew(SComboBox<TSharedPtr<FString>>)';
+      out += '\n' + indent + '.OptionsSource(&' + slotName + ')';
+      // Without an initial selection SComboBox has nothing to show and renders its "no content"
+      // placeholder; the layout's SelectedOption is added first, so index 0 is the selected one.
+      out += '\n' + indent + '.InitiallySelectedItem(' + slotName + '.Num() > 0 ? ' + slotName + '[0] : TSharedPtr<FString>())';
+      out += '\n' + indent + '.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) { return SNew(STextBlock).Text(FText::FromString(Item.IsValid() ? *Item : FString())); })';
+      return out;
+    }
+
+    N.warn(this.warnings, 'class ' + cls + ' (' + name + ') has no Slate mapping; emitted as an SBox container');
     return wrapChild('SNew(SBox)', this.children(node, indent + '    ', 'single'));
+  }
+
+  /** One TArray member per combo box: SComboBox reads its items through a pointer. */
+  comboMembers() {
+    const out = [];
+    for (let i = 0; i < this.comboCount; i += 1) {
+      out.push('    TArray<TSharedPtr<FString>> ComboOptions' + i + ';');
+    }
+    return out;
   }
 
   build() {
     const root = this.layout.root || {};
     const tree = '        ' + this.node(root, '        ');
     const brushInits = this.brushExprs.map((e, i) => '    BrushStore.Add(MakeShared<FSlateBrush>(' + e + '));');
-    const inits = brushInits.concat(this.initLines.map((block) => block.split('\n').map((l) => '    ' + l).join('\n')));
+    const comboInits = this.comboInits.map((line) => '    ' + line);
+    const inits = brushInits
+      .concat(this.initLines.map((block) => block.split('\n').map((l) => '    ' + l).join('\n')))
+      .concat(comboInits);
 
     const header = [
       '#pragma once',
@@ -315,6 +409,12 @@ class SlateEmitter {
       '#include "Widgets/Text/STextBlock.h"',
       '#include "Widgets/Images/SImage.h"',
       '#include "Widgets/Input/SButton.h"',
+      '#include "Widgets/Input/SCheckBox.h"',
+      '#include "Widgets/Input/SEditableTextBox.h"',
+      '#include "Widgets/Input/SSlider.h"',
+      '#include "Widgets/Input/SSpinBox.h"',
+      '#include "Widgets/Input/SComboBox.h"',
+      '#include "Widgets/Notifications/SProgressBar.h"',
       '#include "Styling/SlateTypes.h"',
       '#include "H2USlate.h"',
       '',
@@ -329,12 +429,13 @@ class SlateEmitter {
       'private:',
       '    TArray<TSharedPtr<FSlateBrush>> BrushStore;',
       '    TArray<TSharedPtr<FButtonStyle>> StyleStore;',
+    ].concat(this.comboMembers(), [
       '',
       '    const FSlateBrush* Brush(int32 Index) const { return BrushStore[Index].Get(); }',
       '    const FButtonStyle* Style(int32 Index) const { return StyleStore[Index].Get(); }',
       '};',
       '',
-    ].join('\n');
+    ]).join('\n');
 
     const source = [
       '#include "' + this.className + '.h"',

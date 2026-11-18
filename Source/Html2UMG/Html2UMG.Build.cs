@@ -22,6 +22,9 @@ public class Html2UMG : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				// SEditableTextBox / SSpinBox / SComboBox reference EKeys, which lives in InputCore;
+				// without it the link fails with unresolved EKeys::PageDown & co.
+				"InputCore",
 				"UMG",
 				"UMGEditor",
 				"UnrealEd",
