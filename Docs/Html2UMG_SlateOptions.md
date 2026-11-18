@@ -212,3 +212,51 @@ layout 的 rect 逐控件比较（最近匹配，避免把 Slate 内部文本配
 2. instrumentation 的坑：SWidgetSwitcher::GetChildren() 只返回当前活动页（引擎实现如此），
    所以几何 dump 永远看不到隐藏页。对比脚本因此只比活动页，否则会把每个隐藏页报成缺失——
    这不是生成器的 bug，记下来免得下次误判。
+
+## 12. 排版对不上的两个根因（已修，实测 0px）
+
+### 12.1 `SVerticalBox::Slot()` 默认是 **Fill**，不是 Auto
+
+这是「一堆对不上」的真正来源。用受控探针测出来：300px 高的面板里放三个 `SBox.HeightOverride(40)`
+的子项，结果每个 **92px**（(300-24)/3）——槽默认按比例均分剩余空间。于是每行都比设计高约 4px，
+且**逐行累积**：24 号 fixture 实测行距 60px，设计是 56px。
+
+修法：每个槽都显式写尺寸规则 —— `.AutoHeight()` / `.AutoWidth()`，或在 `SizeRule=Fill` 时写
+`.FillHeight(w)` / `.FillWidth(w)`。修完六行位置误差 `0 0 0 0 0 0`。
+
+### 12.2 `SBorder` 不写 `.Padding()` 会内缩 2px
+
+整页统一 +2px。用同一份 JSON 的 **UMG 渲染**做对照才敢下结论：
+
+    browser (20,20,619,379)
+    umg     (20,20,619,379)   d=(+0,+0)
+    slate   (22,22,621,381)   d=(+2,+2)
+
+修法：每个 Border 都显式输出 `.Padding`（设计没有就写 0）。
+
+### 12.3 盒内子项按**测量间距**排布
+
+只钉尺寸不够：容器是流式叠加，任一行高度不同就会把下面全部推走。现在按 rect 算出相邻子项的
+主轴线间距离，作为槽的 leading padding，并且**第一个子项不吃 gap**（父容器自己的 padding 已经把它
+放到设计位置了，再加就是双重计数——实测第一版首行低了 17px）。框内子项一律只用测量间距，
+CSS 的 margin 被替换而不是叠加（否则同一段 12px 会算两次，每行多 24px）。
+
+### 12.4 结果
+
+| fixture | 差异像素（本轮前 → 后） | 几何位置误差 | 几何尺寸误差 |
+|---|---|---|---|
+| 23-slate-canvas | 4.12% → 4.12% | 0.0 px | 0.0 px |
+| 24-slate-controls | 19.88% → **14.82%** | 0.0 px（仅 SSpinBox 9px） | 0.0 px（仅 SSpinBox 18px） |
+| 25-slate-switcher | 8.91% → 8.91% | 0.0 px | 0.0 px |
+
+对比图（浏览器 / Slate / 差异 x4）：`E:\Epic Games\HTML2Unreal\slate\compare\{23,24,25}.png`，
+渲染图与几何 dump 在 `...\slate\render\`，layout 在 `...\slate\layout\`，生成代码在 `...\slate\pack\`。
+
+### 12.5 仍剩下的（都是控件**外观**，不是排版）
+
+| 现象 | 说明 |
+|---|---|
+| 复选框没有勾 | `FCheckBoxStyle` 的勾选图需要图形，UMG 路线是烘贴图；纯代码路线要自绘或接受默认样式 |
+| 进度条没有轨道底色 | 设计的轨道色来自 UA 默认样式，layout.json 里没有这个颜色 |
+| 下拉框显示引擎的「未提供内容」 | `InitiallySelectedItem` 已传入但未生效，待查 |
+| SSpinBox 位置/尺寸差 9/18px | 数字框自带按钮与内边距，外层 SBox 的尺寸被内部 desired 覆盖 |

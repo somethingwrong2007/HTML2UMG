@@ -53,6 +53,7 @@ class SlateEmitter {
     this.warnings = [];
     this.brushExprs = [];
     this.initLines = [];
+    this.styleInits = [];
     this.styleCount = 0;
     this.comboCount = 0;
     this.parentMode = 'single';
@@ -106,7 +107,7 @@ class SlateEmitter {
     for (const name of names) lines.push('    Style->' + name + ' = *BrushStore[' + idx[name] + '];');
     lines.push('    StyleStore.Add(Style);');
     lines.push('}');
-    this.initLines.push(lines.join('\n'));
+    this.styleInits.push(lines.join('\n'));
     return this.styleCount++;
   }
 
@@ -124,23 +125,55 @@ class SlateEmitter {
     return out;
   }
 
-  paddingOf(node) {
-    const pad = node.slot && node.slot.Padding;
-    if (!Array.isArray(pad) || !pad.some((v) => v)) return null;
-    return 'FMargin(' + N.f(pad[0]) + ', ' + N.f(pad[1]) + ', ' + N.f(pad[2]) + ', ' + N.f(pad[3]) + ')';
+  /**
+   * FMargin for a slot. When the parent is a box panel and the measured gap is known, the gap WINS:
+   * the design's own margin is already baked into the measured positions, so adding both would count
+   * it twice.
+   */
+  paddingOf(node, gap) {
+    const pad = Array.isArray(node.slot && node.slot.Padding) ? node.slot.Padding : [0, 0, 0, 0];
+    const margin = [pad[0] || 0, pad[1] || 0, pad[2] || 0, pad[3] || 0];
+    if (gap) {
+      // The gap already includes everything the design put between two rows, so the CSS margins are
+      // replaced rather than added - keeping the trailing margin would count that space twice (the
+      // next child's gap would then start after it again).
+      margin[0] = 0;
+      margin[1] = 0;
+      margin[2] = 0;
+      margin[3] = 0;
+      if (gap.vertical) margin[1] = gap.leading;
+      else margin[0] = gap.leading;
+    }
+    return margin.some((v) => Math.abs(v) > 0.01)
+      ? 'FMargin(' + N.f(margin[0]) + ', ' + N.f(margin[1]) + ', ' + N.f(margin[2]) + ', ' + N.f(margin[3]) + ')'
+      : null;
   }
 
-  boxSlot(node, vertical) {
+  /**
+   * Box slot built from the MEASURED gap, not from the CSS padding chain.
+   *
+   * Pinning sizes alone was not enough: a box panel stacks its children, so any row whose height
+   * differs from the design shifts every row below it - the "nothing lines up" symptom. The gap
+   * between two neighbouring nodes is known from their rects, and consuming it as slot padding puts
+   * every child on its designed position regardless of what Slate gives the previous one.
+   */
+  boxSlot(node, vertical, gap) {
     const s = node.slot || {};
     let out = vertical ? 'SVerticalBox::Slot()' : 'SHorizontalBox::Slot()';
-    const pad = this.paddingOf(node);
+    const pad = this.paddingOf(node, gap);
     if (pad) out += '.Padding(' + pad + ')';
     out += '.HAlign(' + (H[s.HorizontalAlignment] || 'HAlign_Fill') + ')';
     out += '.VAlign(' + (V[s.VerticalAlignment] || 'VAlign_Fill') + ')';
+    // The size rule is ALWAYS stated. A bare SVerticalBox::Slot() is a FILL slot, not an auto one, so
+    // relying on the default made every row share the panel's leftover height equally: measured with a
+    // probe of three 40px boxes in a 300px panel they came out 92px each, and on a real page each row
+    // grew ~4px and every row below drifted further (60px step where the design says 56).
     const size = s.Size || {};
     if (size.SizeRule === 'Fill') {
       const weight = N.f(size.Value === undefined ? 1 : size.Value);
       out += vertical ? '.FillHeight(' + weight + ')' : '.FillWidth(' + weight + ')';
+    } else {
+      out += vertical ? '.AutoHeight()' : '.AutoWidth()';
     }
     return out;
   }
@@ -163,11 +196,29 @@ class SlateEmitter {
     const pad = indent + '    ';
     const previousMode = this.parentMode;
     this.parentMode = mode;
+    // Running end of the previous child on the main axis, so each slot's leading gap can be measured.
+    const parentRect = Array.isArray(node.rect) ? node.rect : null;
+    let mainEnd = null;
     for (const kid of kids) {
       const body = pad + this.pin(kid, pad, this.node(kid, pad));
       if (mode === 'single') {
         parts.push(body);
         continue;
+      }
+      let gap = null;
+      if ((mode === 'vbox' || mode === 'hbox') && Array.isArray(kid.rect)) {
+        const vertical = mode === 'vbox';
+        // The FIRST child gets no gap: the parent's own padding/border already put it where the design
+        // measured it, and measuring from the parent's rect counted that padding a second time (the
+        // first row landed 17px low). Only the distance between two consecutive children is a number
+        // the parent does not already apply.
+        // Always expressed as a gap, the first child included (leading 0). Keeping the CSS margin on the
+        // first slot as well as the measured gap on the next one counted the same 12px twice, which is
+        // why the rows marched down the page.
+        const lead = mainEnd === null ? 0 : (vertical ? kid.rect[1] : kid.rect[0]) - mainEnd;
+        gap = { vertical: vertical, leading: Math.max(0, Math.round(lead * 100) / 100), from: mainEnd, to: kid.rect[1], who: kid.name };
+        if (process.env.HTML2UMG_DEBUG_SLATE) N.warn(this.warnings, 'slate gap ' + node.name + ' -> ' + kid.name + ' = ' + gap.leading + ' (from ' + mainEnd + ' to ' + kid.rect[1] + ')');
+        mainEnd = vertical ? kid.rect[1] + kid.rect[3] : kid.rect[0] + kid.rect[2];
       }
       if (mode === 'canvas') {
         const slot = this.canvasSlot(kid);
@@ -177,7 +228,7 @@ class SlateEmitter {
         }
         parts.push(indent + '+ ' + slot + '\n' + indent + '  [\n' + body + '\n' + indent + '  ]');
       } else if (mode === 'vbox' || mode === 'hbox') {
-        const slot = this.boxSlot(kid, mode === 'vbox');
+        const slot = this.boxSlot(kid, mode === 'vbox', gap);
         parts.push(indent + '+ ' + slot + '\n' + indent + '  [\n' + body + '\n' + indent + '  ]');
       } else if (mode === 'overlay') {
         parts.push(indent + '+ ' + this.overlaySlot(kid) + '\n' + indent + '  [\n' + body + '\n' + indent + '  ]');
@@ -314,10 +365,32 @@ class SlateEmitter {
         if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
       }
       const bar = N.pget(props, 'SliderBarColor');
-      if (Array.isArray(bar)) out += '\n' + indent + '.SliderBarColor(' + N.lc(bar) + ')';
       const handle = N.pget(props, 'SliderHandleColor');
+      if (Array.isArray(bar)) out += '\n' + indent + '.SliderBarColor(' + N.lc(bar) + ')';
       if (Array.isArray(handle)) out += '\n' + indent + '.SliderHandleColor(' + N.lc(handle) + ')';
-      N.warn(this.warnings, 'slider ' + name + ': FSliderStyle bar/thumb brushes are not reproduced (colours come from the layout)');
+      // A colour alone does not paint: SSlider draws with FSliderStyle brushes, whose default is the
+      // engine's own grey bar. Building the three states in code from the layout's colours is the
+      // Slate equivalent of the UMG path's baked slider skin, without the texture.
+      if (Array.isArray(bar) && Array.isArray(handle)) {
+        const barIdx = this.brushIndex({ tint: bar, radii: [0, 0, 0, 0], outlineWidth: 0, outlineColor: [0, 0, 0, 0] }, name + ' bar');
+        const thumbIdx = this.brushIndex({ tint: handle, radii: [4, 4, 4, 4], outlineWidth: 0, outlineColor: [0, 0, 0, 0] }, name + ' thumb');
+        const sliderIdx = this.styleCount++;
+        const block = [
+          '{',
+          '    TSharedPtr<FSliderStyle> S = MakeShared<FSliderStyle>();',
+          '    S->NormalBarImage = *BrushStore[' + barIdx + '];',
+          '    S->HoveredBarImage = *BrushStore[' + barIdx + '];',
+          '    S->DisabledBarImage = *BrushStore[' + barIdx + '];',
+          '    S->NormalThumbImage = *BrushStore[' + thumbIdx + '];',
+          '    S->HoveredThumbImage = *BrushStore[' + thumbIdx + '];',
+          '    S->DisabledThumbImage = *BrushStore[' + thumbIdx + '];',
+          '    SliderStyleStore.Add(S);',
+          '}',
+        ];
+        this.styleInits.push(block.join('\n'));
+        // SSlider's argument is called Style, not SliderStyle.
+        out += '\n' + indent + '.Style(SliderStyle(' + sliderIdx + '))';
+      }
       return (out);
     }
 
@@ -343,6 +416,17 @@ class SlateEmitter {
       for (const key of ['Value', 'MinValue', 'MaxValue', 'Delta']) {
         const v = Number(N.pget(props, key));
         if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
+      }
+      // The design's number is an integer, so the box must not pad it to "3.0": SSpinBox derives its
+      // fractional digits from the step, which is 1 here.
+      const step = Number(N.pget(props, 'Delta'));
+      const value = Number(N.pget(props, 'Value'));
+      const integer = (!Number.isFinite(step) || Math.abs(step - Math.round(step)) < 1e-6) &&
+        (!Number.isFinite(value) || Math.abs(value - Math.round(value)) < 1e-6);
+      if (integer) {
+        // DefaultMinFractionalDigits is 1, which is why an integer rendered as "3.0".
+        out += '\n' + indent + '.MinFractionalDigits(0)';
+        out += '\n' + indent + '.MaxFractionalDigits(0)';
       }
       return (out);
     }
@@ -440,8 +524,10 @@ class SlateEmitter {
     const tree = '        ' + this.node(root, '        ');
     const brushInits = this.brushExprs.map((e, i) => '    BrushStore.Add(MakeShared<FSlateBrush>(' + e + '));');
     const comboInits = this.comboInits.map((line) => '    ' + line);
+    // Styles live in their own store: FButtonStyle and FSliderStyle are different types, so Style(N)
+    // cannot be shared between them.
     const inits = brushInits
-      .concat(this.initLines.map((block) => block.split('\n').map((l) => '    ' + l).join('\n')))
+      .concat(this.styleInits.map((block) => block.split('\n').map((l) => '    ' + l).join('\n')))
       .concat(comboInits);
 
     const header = [
@@ -481,10 +567,12 @@ class SlateEmitter {
       'private:',
       '    TArray<TSharedPtr<FSlateBrush>> BrushStore;',
       '    TArray<TSharedPtr<FButtonStyle>> StyleStore;',
+      '    TArray<TSharedPtr<FSliderStyle>> SliderStyleStore;',
     ].concat(this.comboMembers(), [
       '',
       '    const FSlateBrush* Brush(int32 Index) const { return BrushStore[Index].Get(); }',
       '    const FButtonStyle* Style(int32 Index) const { return StyleStore[Index].Get(); }',
+      '    const FSliderStyle* SliderStyle(int32 Index) const { return SliderStyleStore[Index].Get(); }',
       '};',
       '',
     ]).join('\n');
