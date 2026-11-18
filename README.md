@@ -539,6 +539,30 @@ signal at all for CSS to carry.
 
 Full write-up, limits included: `Docs/Html2UMG_ReverseExport.md`.
 
+## Output to Slate (pure code, nothing baked)
+
+The same layout.json can emit **Slate C++** instead of a Widget Blueprint:
+
+```bat
+node Plugins/Html2UMG/Resources/Converter/cli/html2slate.js layout.json \
+     -o <outDir> --class FH2UPage --asset-root /Game/Html2UMG
+```
+
+It writes `<Class>.h` / `<Class>.cpp` / `H2USlate.h`. **Colours, corner radii and outlines are
+FSlateBrush values built in code**, and a button's hover/pressed/disabled states are four brushes in an
+FButtonStyle - **not a single baked texture**. Only real design images (`<img>`, `background-image`)
+load an asset, from the layout's asset path, and text uses the same composite fonts.
+
+Verified: `test/05-controls.html` produces 64 widget expressions with no warnings and compiles inside
+the plugin's editor module first try. Pixel comparison is the next step (FWidgetRenderer::DrawWidget
+already takes any SWidget).
+
+Known gaps: `NamedSlot` (Slate has no `SNamedSlot`; components need their own class), gradients and
+shadows (need `MakeGradient` in a custom OnPaint), animation (`UWidgetAnimation` is UMG-only), no
+designer and no tree asset, and localization needs `LOCTEXT`.
+
+Tradeoffs and prior art: `Docs/Html2UMG_SlateOptions.md`.
+
 ## Verification tools
 
 Conversion is quantifiable; you do not have to judge "looks close" by eye.

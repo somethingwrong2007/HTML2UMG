@@ -480,6 +480,27 @@ node Resources/Tools/layout_diff.js a.json b.json --tolerance 1 --verbose
 
 完整说明（含限制清单与验证方法）：`Docs/Html2UMG_ReverseExport.md`。
 
+## 输出到 Slate（纯代码，不烘焙贴图）
+
+同一份 layout.json 也能生成 **Slate C++**，而不是 Widget Blueprint：
+
+```bat
+node Plugins/Html2UMG/Resources/Converter/cli/html2slate.js layout.json \
+     -o <输出目录> --class FH2UPage --asset-root /Game/Html2UMG
+```
+
+产出 `<Class>.h` / `<Class>.cpp` / `H2USlate.h`。**颜色、圆角、描边全部用代码构造 `FSlateBrush`**，
+按钮的 hover/pressed/disabled 是 `FButtonStyle` 里的四个 brush，**一张贴图都不烘**；只有真实设计图
+（`<img>`、`background-image`）才按 layout 的资产路径加载，字体走同一套复合字体。
+
+已验证：`test/05-controls.html` 生成 64 个控件表达式、0 告警，放进插件 Editor 模块一次编译通过。
+像素对拍是下一步（`FWidgetRenderer::DrawWidget` 本来就接收任意 `SWidget`）。
+
+已知缺口：`NamedSlot`（Slate 没有 `SNamedSlot`，需类化组件）、渐变/阴影（要 `OnPaint` 里
+`MakeGradient`）、动画（`UWidgetAnimation` 是 UMG 专有）、无设计器/无树资产、本地化需 `LOCTEXT`。
+
+取舍与外部先例见 `Docs/Html2UMG_SlateOptions.md`。
+
 ## 验证工具
 
 转换过程可以量化，不必靠眼睛判断"像不像"。
