@@ -204,6 +204,10 @@ class SlateEmitter {
       const i = this.brushIndex(item, name);
       return i < 0 ? 'nullptr' : 'Brush(' + i + ')';
     };
+    // The converter keeps a node's paint on the NODE (node.brush); the WBP exporter flattens it into
+    // properties (Background.*). Reading only properties silently dropped every container fill in the
+    // converter dialect, which drew the whole page black because nothing was painted underneath.
+    const nodeBrush = N.normBrush(node.brush);
 
     // A single-child container takes its child inside [...]; a panel takes "+ Slot()[...]" lines
     // directly after the SNew, which is how the engine itself writes them.
@@ -238,7 +242,7 @@ class SlateEmitter {
     }
 
     if (kind === 'image') {
-      const b = N.propsBrush(props, 'Brush') || N.propsBrush(props, 'Background');
+      const b = nodeBrush || N.propsBrush(props, 'Brush') || N.propsBrush(props, 'Background');
       let out = 'SNew(SImage)';
       if (b) out += '\n' + indent + '.Image(' + br(b) + ')';
       return out;
@@ -249,7 +253,7 @@ class SlateEmitter {
     if (kind === 'single') {
       const inner = this.children(node, indent + '    ', 'single');
       if (/Border/.test(cls)) {
-        const b = N.propsBrush(props, 'Background');
+        const b = nodeBrush || N.propsBrush(props, 'Background');
         let head = 'SNew(SBorder)';
         if (b) head += '\n' + indent + '.BorderImage(' + br(b) + ')';
         const pad = N.pget(props, 'Padding');
