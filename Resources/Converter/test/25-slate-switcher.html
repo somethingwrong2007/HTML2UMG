@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" /><title>slate switcher pages</title><style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:480px;height:200px;background:#0d1117;color:#e6edf3;
+  font-family:"Noto Sans SC",sans-serif}
+.sw{position:absolute;left:20px;top:20px;width:440px;height:160px;background:#161d27;
+  border-radius:10px;padding:16px}
+.page{position:absolute;left:16px;top:16px;width:408px;height:128px;display:none}
+.page.on{display:block}
+.page h3{margin:0 0 12px;font-size:14px;color:#2f81f7}
+.page p{margin:0;font-size:12px;color:#8b98a8}
+.page progress{position:absolute;left:0;bottom:0;width:408px;height:18px}
+</style></head><body>
+<div class="sw" data-ue-switcher data-ue-name="Pages">
+  <div class="page on" data-ue-name="PageA" data-ue-name-verbatim>
+    <h3 data-ue-name="PageATitle">PAGE A</h3>
+    <p data-ue-name="PageABody">current page</p>
+    <progress data-ue-name="PageABar" value="0.7" max="1"></progress>
+  </div>
+  <div class="page" data-ue-name="PageB" data-ue-name-verbatim>
+    <h3 data-ue-name="PageBTitle">PAGE B</h3>
+    <p data-ue-name="PageBBody">hidden page, must still be measured</p>
+    <progress data-ue-name="PageBBar" value="0.3" max="1"></progress>
+  </div>
+</div>
+</body></html>

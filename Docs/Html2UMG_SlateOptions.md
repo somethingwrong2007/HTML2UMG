@@ -169,3 +169,46 @@ Epic 官方立场：游戏内 UI **首选 UMG**，Slate 主要面向编辑器/�
 下一步需要的不是继续调参，而是**instrumentation**：给临时渲染命令加一个几何 dump（遍历 `SWidget` 的
 `GetDesiredSize()`/`GetCachedGeometry()`，和 JSON 的 `rect` 逐节点对比），才能看出是哪一层的
 高度差被累积。盲调已经证明无效（钉了全部节点反而略差）。
+
+## 11. 测试体系（多轮迭代用）
+
+### 11.1 新增 fixture
+
+| 文件 | 覆盖什么 |
+|---|---|
+| test/23-slate-canvas.html | 锚点三种形态（点锚 / 水平拉伸 / 右下远边锚）+ 圆角 + 描边 + 胶囊与圆形 |
+| test/24-slate-controls.html | 六种原生控件（复选框/滑块/进度条/输入框/数字框/下拉框），各自有明确 px 尺寸 |
+| test/25-slate-switcher.html | 切换器两页（隐藏页也必须被测量），页内有文本与进度条 |
+
+### 11.2 快速层（不需要引擎）
+
+    node test/slate/run_slate_tests.js
+    node test/slate/run_slate_tests.js --filter 24
+
+每个 fixture 断言：转换成功、每个节点都带 rect、期望的控件类都出现、没有 no-Slate-mapping、
+以及生成器确定性（两次产出逐字节相同）。
+
+### 11.3 引擎层（一次构建，渲染 + 几何对比）
+
+    bash test/slate/engine_tests.sh
+
+流程：转换 -> html2slate-pack 打包（含一个名字到 SNew(类) 的注册表，因为 SWidget 不是 UObject、
+运行时无法按名字查类）-> 拷进插件 -> 一次构建 -> 按名字渲染每个 fixture 并 dump 几何 -> 与
+layout 的 rect 逐控件比较（最近匹配，避免把 Slate 内部文本配到设计文本上）。
+
+### 11.4 当前实测
+
+| fixture | 参与比较控件 | 最大位置误差 | 最大尺寸误差 |
+|---|---|---|---|
+| 23-slate-canvas | 2（文本） | 4.0 px | 5.9 px |
+| 24-slate-controls | 12（6 控件 + 6 文本） | 11.0 px | 18.0 px |
+| 25-slate-switcher | 3 | 2.0 px | 362 px（文本未拉伸到页宽） |
+
+### 11.5 这两轮测试直接抓到的 bug
+
+1. data-ue-switcher 被子元素绝对定位吃掉。切换器检测原先只在流式容器分支里做，而页面常常是
+   绝对定位的，于是走 canvas 分支、属性被静默忽略，设计稿的切换器变成一个页面堆叠。已修：在
+   flow/absolute 分流之前检查该属性。24 个 fixture 全量校验通过，25 现在正确产出 PageSwitcher。
+2. instrumentation 的坑：SWidgetSwitcher::GetChildren() 只返回当前活动页（引擎实现如此），
+   所以几何 dump 永远看不到隐藏页。对比脚本因此只比活动页，否则会把每个隐藏页报成缺失——
+   这不是生成器的 bug，记下来免得下次误判。

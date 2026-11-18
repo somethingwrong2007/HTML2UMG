@@ -4381,6 +4381,14 @@ class Mapper {
       return node;
     }
 
+    // data-ue-switcher is a statement about the CONTAINER, not about how its children happen to be laid
+    // out. Pages are very often absolutely positioned inside their switcher, which used to take the
+    // canvas branch below and silently drop the attribute: a design lost its switcher and came out as a
+    // stack of pages. Checked here, before the flow/absolute split.
+    if ((rec.ue || {}).switcher !== undefined) {
+      return this.buildFlowContainer(rec, style, 'switcher', flow.concat(absolute), ctx, name, base);
+    }
+
     if (absolute.length && flow.length) {
       // Flow children keep their flow container, absolutely positioned ones are
       // placed on a CanvasPanel sibling layer (CSS stacking inside one box).
