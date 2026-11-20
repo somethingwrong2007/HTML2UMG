@@ -366,14 +366,30 @@ class SlateEmitter {
       }
       const bar = N.pget(props, 'SliderBarColor');
       const handle = N.pget(props, 'SliderHandleColor');
+      // The layout records the slider skin's own geometry: the bar's thickness and the thumb's fixed
+      // size. A thumb drawn from a stretched brush is a rounded SQUARE, not the round handle the design
+      // shows, so both are taken from the layout and the thumb gets a radius of half its size.
+      const style = N.pget(props, 'WidgetStyle') || {};
+      const barThickness = Number(style.BarThickness) || Number((node.rect || [])[3]) || 20;
+      const thumbSize = (style.NormalThumbImage && Array.isArray(style.NormalThumbImage.imageSize))
+        ? style.NormalThumbImage.imageSize
+        : null;
+      const thumbW = thumbSize ? Number(thumbSize[0]) : barThickness;
+      const thumbH = thumbSize ? Number(thumbSize[1]) : barThickness;
       if (Array.isArray(bar)) out += '\n' + indent + '.SliderBarColor(' + N.lc(bar) + ')';
       if (Array.isArray(handle)) out += '\n' + indent + '.SliderHandleColor(' + N.lc(handle) + ')';
       // A colour alone does not paint: SSlider draws with FSliderStyle brushes, whose default is the
       // engine's own grey bar. Building the three states in code from the layout's colours is the
       // Slate equivalent of the UMG path's baked slider skin, without the texture.
       if (Array.isArray(bar) && Array.isArray(handle)) {
-        const barIdx = this.brushIndex({ tint: bar, radii: [0, 0, 0, 0], outlineWidth: 0, outlineColor: [0, 0, 0, 0] }, name + ' bar');
-        const thumbIdx = this.brushIndex({ tint: handle, radii: [4, 4, 4, 4], outlineWidth: 0, outlineColor: [0, 0, 0, 0] }, name + ' thumb');
+        const barR = N.round2(barThickness / 2);
+        const thumbR = N.round2(Math.min(thumbW, thumbH) / 2);
+        // The style's own bar is TRANSPARENT: the track and its fill are drawn underneath (see the
+        // SOverlay composition below), and a visible bar here would cover them with a flat pill.
+        const barIdx = this.brushIndex({ tint: [0, 0, 0, 0], radii: [barR, barR, barR, barR], outlineWidth: 0, outlineColor: [0, 0, 0, 0] }, name + ' bar');
+        // The thumb keeps its own pixel size (a pill bar has no size of its own: it stretches).
+        this.brushExprs.push('H2USlate::SizedBoxBrush(' + N.lc(handle) + ', FVector4(' + N.f(thumbR) + ', ' + N.f(thumbR) + ', ' + N.f(thumbR) + ', ' + N.f(thumbR) + '), FVector2D(' + N.f(thumbW) + ', ' + N.f(thumbH) + '))');
+        const thumbIdx = this.brushExprs.length - 1;
         const sliderIdx = this.styleCount++;
         const block = [
           '{',
@@ -390,6 +406,43 @@ class SlateEmitter {
         this.styleInits.push(block.join('\n'));
         // SSlider's argument is called Style, not SliderStyle.
         out += '\n' + indent + '.Style(SliderStyle(' + sliderIdx + '))';
+
+        // FSliderStyle draws ONE bar behind the thumb and has no notion of a filled portion, so the
+        // browser's two-tone track (filled up to the handle, then plain track) cannot be expressed by
+        // the style alone. It is composed instead: a full-width track, a fill sized to the value, and
+        // the slider itself on top so it still takes input. The fill colour is derived from the
+        // layout's bar colour - the design's exact accent lives inside the baked skin, which this
+        // path deliberately does not produce.
+        const rect = Array.isArray(node.rect) ? node.rect : [0, 0, 0, 0];
+        const minV = Number(N.pget(props, 'MinValue'));
+        const maxV = Number(N.pget(props, 'MaxValue'));
+        const valV = Number(N.pget(props, 'Value'));
+        let ratio = 0.5;
+        if (Number.isFinite(minV) && Number.isFinite(maxV) && Number.isFinite(valV) && maxV !== minV) {
+          ratio = Math.min(1, Math.max(0, (valV - minV) / (maxV - minV)));
+        }
+        const fillTint = [bar[0], bar[1], bar[2], bar[3]];
+        const trackTint = [bar[0] * 0.35, bar[1] * 0.35, bar[2] * 0.35, bar[3]];
+        this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(trackTint) + ', FVector4(' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + '), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
+        const trackIdx = this.brushExprs.length - 1;
+        this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(fillTint) + ', FVector4(' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + '), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
+        const fillIdx = this.brushExprs.length - 1;
+        const fillW = N.round2(rect[2] * ratio);
+        const built = [
+          'SNew(SOverlay)',
+          indent + '+ SOverlay::Slot().VAlign(VAlign_Center)[',
+          indent + '    SNew(SBorder).BorderImage(Brush(' + trackIdx + ')).Padding(FMargin(0.0f))',
+          indent + ']',
+          indent + '+ SOverlay::Slot().VAlign(VAlign_Center).HAlign(HAlign_Left)[',
+          indent + '    SNew(SBox).WidthOverride(' + N.f(fillW) + ')[',
+          indent + '        SNew(SBorder).BorderImage(Brush(' + fillIdx + ')).Padding(FMargin(0.0f))',
+          indent + '    ]',
+          indent + ']',
+          indent + '+ SOverlay::Slot()[',
+          indent + '    ' + out.split('\n').join('\n' + indent + '    '),
+          indent + ']',
+        ].join('\n');
+        return '(' + built + ')';
       }
       return (out);
     }

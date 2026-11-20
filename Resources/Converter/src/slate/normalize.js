@@ -87,4 +87,9 @@ function propsBrush(props, base) {
   return normBrush(flat);
 }
 
-module.exports = { pget, normBrush, propsBrush, f, lc, txt, str, warn, ALIGN_H, ALIGN_V, JUSTIFY };
+/** Two-decimal rounding, so emitted literals stay readable. */
+function round2(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
+module.exports = { pget, normBrush, propsBrush, f, lc, txt, str, warn, round2, ALIGN_H, ALIGN_V, JUSTIFY };

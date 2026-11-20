@@ -260,3 +260,37 @@ CSS 的 margin 被替换而不是叠加（否则同一段 12px 会算两次，�
 | 进度条没有轨道底色 | 设计的轨道色来自 UA 默认样式，layout.json 里没有这个颜色 |
 | 下拉框显示引擎的「未提供内容」 | `InitiallySelectedItem` 已传入但未生效，待查 |
 | SSpinBox 位置/尺寸差 9/18px | 数字框自带按钮与内边距，外层 SBox 的尺寸被内部 desired 覆盖 |
+
+## 13. 滑块：圆手柄 + 两段轨道（代码构造）
+
+`FSliderStyle` 只有**一条** bar 和一条 thumb，没有「已填充段」的概念，所以浏览器里
+「填充到手柄位置 + 其后是空轨」的两段式轨道，光靠样式表达不了。
+
+现在的做法（全部用代码，无贴图）：
+
+```
+SOverlay
+  + 底轨     SBorder  BorderImage = BoxBrush(bar×0.35, 半径=条厚/2)   // 胶囊
+  + 填充段   SBox.WidthOverride(宽 × 比例) [ SBorder BoxBrush(bar, 同半径) ]
+  + 滑块     SSlider  Style = FSliderStyle{ bar 透明, thumb = 圆形固定尺寸 }
+```
+
+- **圆手柄**：thumb 用 `SizedBoxBrush(tint, 半径=7.5, ImageSize=15x15)`。之前被拉伸成椭圆/圆角方
+  是因为没有设 `ImageSize`——画刷默认铺满整个槽，15x15 的图被拉成 292x20，再按 4px 圆角就变成胶囊。
+- **条厚/手柄尺寸取自 layout**：`WidgetStyle.BarThickness` 与 `WidgetStyle.NormalThumbImage.imageSize`
+  （本例 20 / 15x15），不是猜的。
+- **样式里的 bar 设为透明**，否则它会盖住下面画好的两段轨道。
+- 填充色由 layout 的 bar 色派生（设计的确切强调色在烘焙皮肤里，这条路线不产出烘焙）。
+
+## 14. 当前构建阻塞（与插件无关）
+
+全量 `FPVSkylineEditor` 构建被项目自身代码挡住：
+
+    Source/FPVSkyline/Private/AircraftParts/UI/SAircraftAssemblyEditor.cpp(1861..1863): C2664
+    Source/FPVSkyline/Public/Contract/GameplayChannels.h(94): C3861 MakeIndexedName 未定义
+
+插件侧改动已用 `-SingleFile` 单独编译验证：**Result: Succeeded**。
+项目代码恢复绿之后，用下面两条即可出图与对比：
+
+    bash test/slate/engine_tests.sh              # 构建 + 渲染 + 几何对比
+    python test/slate/make_comparison.py ...     # 三格对比图
