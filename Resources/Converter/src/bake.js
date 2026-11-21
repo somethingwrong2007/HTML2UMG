@@ -607,6 +607,60 @@ async function shot(session, rect, scale) {
  * Bake the native parts of every control in the snapshot.
  * Returns Map<recordIndex, {kind, parts:{...}, imageSize:{...}}>.
  */
+
+
+/**
+ * The two colours of a range track, measured from one scanline through its middle.
+ *
+ * A native range paints the accent up to the handle and the plain track after it, so the middle row
+ * always contains both. The most saturated colour on that row is the accent (the fill), and the
+ * brightest remaining one is the track. Nearly transparent pixels are ignored.
+ */
+function measureBarPalette(image) {
+  const y = Math.floor(image.height / 2);
+  const row = [];
+  for (let x = 0; x < image.width; x += 1) {
+    const i = (y * image.width + x) * 4;
+    if (image.data[i + 3] <= 96) continue;
+    row.push([image.data[i], image.data[i + 1], image.data[i + 2]]);
+  }
+  if (!row.length) return null;
+  const saturation = (c) => Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]);
+  const luminance = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const fill = row.reduce((best, c) => (saturation(c) > saturation(best) ? c : best), row[0]);
+  const track = row.reduce((best, c) => (luminance(c) > luminance(best) ? c : best), row[0]);
+  return {
+    fill: [fill[0], fill[1], fill[2], 255],
+    track: [track[0], track[1], track[2], 255],
+  };
+}
+/**
+ * Dominant opaque colour of a baked part, as sRGB bytes [r, g, b, a].
+ *
+ * "Dominant" is a coarse histogram mode over 4-bit-per-channel buckets: a control skin is mostly one
+ * colour with antialiased edges, and the mode is what a person would call its colour. A code-only
+ * consumer uses it to reproduce a skin colour it has no field for (a native range accent, for one).
+ */
+function dominantOpaqueColor(image) {
+  const counts = new Map();
+  let total = 0;
+  for (let i = 0; i < image.data.length; i += 4) {
+    if (image.data[i + 3] <= 96) continue;
+    const key = ((image.data[i] >> 4) << 8) | ((image.data[i + 1] >> 4) << 4) | (image.data[i + 2] >> 4);
+    counts.set(key, (counts.get(key) || 0) + 1);
+    total += 1;
+  }
+  if (!total) return null;
+  let bestKey = 0;
+  let bestCount = -1;
+  for (const entry of counts) {
+    if (entry[1] > bestCount) { bestCount = entry[1]; bestKey = entry[0]; }
+  }
+  const r = (((bestKey >> 8) & 0xf) << 4) + 8;
+  const g = (((bestKey >> 4) & 0xf) << 4) + 8;
+  const b = ((bestKey & 0xf) << 4) + 8;
+  return [Math.min(255, r), Math.min(255, g), Math.min(255, b), 255];
+}
 async function bakeControls(options) {
   const { session, snapshot, assets, warn } = options;
   const scale = Math.max(1, Math.min(4, options.scale || 2));
@@ -646,6 +700,11 @@ async function bakeControls(options) {
     // rasterisation scale.
     added.designWidth = Math.round((baked.width / divisor) * 100) / 100;
     added.designHeight = Math.round((baked.height / divisor) * 100) / 100;
+    // The painted colour, measured from the pixels that were actually drawn. A control's skin often
+    // carries colour the layout has no field for (a native range's accent, for instance): its
+    // SliderBarColor is plain white while the painted track is blue. Recording the dominant opaque
+    // colour lets a code-only consumer reproduce the colour without shipping the texture.
+    added.bakedColor = dominantOpaqueColor(baked);
     return added;
   };
 
@@ -908,8 +967,19 @@ async function bakeProgress(session, rec, clip, scale, radii, register, label, w
   const trackPng = await shot(session, clip, scale);
   const trackImage = decodePng(trackPng);
   if (trackImage) {
-    const added = register(applyRoundedMask(trackImage, radii, scale), `${label} track`);
-    if (added) parts.track = added;
+    const masked = applyRoundedMask(trackImage, radii, scale);
+    const added = register(masked, `${label} track`);
+    if (added) {
+      // The track's painted colour, measured the same way the range track is. Without it a code-only
+      // consumer can only draw a transparent background, which is why the progress bar looked like a
+      // fill floating on the page instead of a fill inside a track.
+      const palette = measureBarPalette(masked);
+      if (palette) {
+        added.palette = { fill: null, track: palette.track };
+        if (!added.palette.fill) added.bakedColor = palette.track;
+      }
+      parts.track = added;
+    }
   } else {
     warn(`bake: could not decode the progress track of '${label}'`);
   }
@@ -1002,8 +1072,16 @@ async function bakeRange(session, rec, clip, scale, radii, register, label, warn
   const trackPng = await shot(session, clip, scale);
   const trackImage = decodePng(trackPng);
   if (trackImage) {
-    const added = register(applyRoundedMask(trackImage, radii, scale), `${label} track`);
-    if (added) parts.track = added;
+    const masked = applyRoundedMask(trackImage, radii, scale);
+    const added = register(masked, `${label} track`);
+    if (added) {
+      // The painted palette of the track: one scanline already carries both halves of a native range -
+      // the accent up to the handle and the plain track after it - so the fill and track colours can be
+      // measured instead of guessed. A single "dominant colour" is useless here: most of this texture
+      // is the page behind a thin bar, which is why the first attempt reported the background.
+      added.palette = measureBarPalette(masked);
+      parts.track = added;
+    }
   } else {
     warn(`bake: could not decode the slider track of '${label}'`);
   }

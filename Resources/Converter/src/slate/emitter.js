@@ -364,8 +364,20 @@ class SlateEmitter {
         const v = Number(N.pget(props, key));
         if (Number.isFinite(v)) out += '\n' + indent + '.' + key + '(' + N.f(v) + ')';
       }
-      const bar = N.pget(props, 'SliderBarColor');
-      const handle = N.pget(props, 'SliderHandleColor');
+      // The declared colours are only a fallback. When the skin was baked, the painted colours were
+      // measured from its pixels (bake.js records them), and those are what the design actually shows -
+      // a native range declares a white bar while painting a blue one.
+      const styleNode = N.pget(props, 'WidgetStyle') || {};
+      const palette = styleNode.NormalBarImage && styleNode.NormalBarImage.palette
+        ? styleNode.NormalBarImage.palette : null;
+      const bakedBar = palette && Array.isArray(palette.fill)
+        ? N.srgbBytesToLinear(palette.fill)
+        : (styleNode.NormalBarImage && Array.isArray(styleNode.NormalBarImage.bakedColor)
+          ? N.srgbBytesToLinear(styleNode.NormalBarImage.bakedColor) : null);
+      const bakedThumb = styleNode.NormalThumbImage && Array.isArray(styleNode.NormalThumbImage.bakedColor)
+        ? N.srgbBytesToLinear(styleNode.NormalThumbImage.bakedColor) : null;
+      const bar = bakedBar || N.pget(props, 'SliderBarColor');
+      const handle = bakedThumb || N.pget(props, 'SliderHandleColor');
       // The layout records the slider skin's own geometry: the bar's thickness and the thumb's fixed
       // size. A thumb drawn from a stretched brush is a rounded SQUARE, not the round handle the design
       // shows, so both are taken from the layout and the thumb gets a radius of half its size.
@@ -382,7 +394,12 @@ class SlateEmitter {
       // engine's own grey bar. Building the three states in code from the layout's colours is the
       // Slate equivalent of the UMG path's baked slider skin, without the texture.
       if (Array.isArray(bar) && Array.isArray(handle)) {
-        const barR = N.round2(barThickness / 2);
+        // BarThickness in the layout is the slot's height (20 here), NOT the painted track: the design's
+      // track is about a third of that, and using the slot height drew a fat pill that does not look
+      // like the source at all. The thumb is the reliable reference - a native range track is a little
+      // thinner than its own thumb - so the painted thickness is derived from it and clamped.
+      const paintedThickness = Math.max(2, Math.min(barThickness, N.round2(thumbH * 0.4)));
+      const barR = N.round2(paintedThickness / 2);
         const thumbR = N.round2(Math.min(thumbW, thumbH) / 2);
         // The style's own bar is TRANSPARENT: the track and its fill are drawn underneath (see the
         // SOverlay composition below), and a visible bar here would cover them with a flat pill.
@@ -421,20 +438,31 @@ class SlateEmitter {
         if (Number.isFinite(minV) && Number.isFinite(maxV) && Number.isFinite(valV) && maxV !== minV) {
           ratio = Math.min(1, Math.max(0, (valV - minV) / (maxV - minV)));
         }
+        // Both halves come from the measured palette when the skin was baked: the track is the plain
+        // part after the handle, and the fill is the accent. A derived "35% of the bar colour" was only
+        // a stand-in for the case where nothing was measurable.
         const fillTint = [bar[0], bar[1], bar[2], bar[3]];
-        const trackTint = [bar[0] * 0.35, bar[1] * 0.35, bar[2] * 0.35, bar[3]];
+        const trackTint = palette && Array.isArray(palette.track)
+          ? N.srgbBytesToLinear(palette.track)
+          : [bar[0] * 0.35, bar[1] * 0.35, bar[2] * 0.35, bar[3]];
         this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(trackTint) + ', FVector4(' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + '), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
         const trackIdx = this.brushExprs.length - 1;
         this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(fillTint) + ', FVector4(' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + ', ' + N.f(barR) + '), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
         const fillIdx = this.brushExprs.length - 1;
         const fillW = N.round2(rect[2] * ratio);
+        // Both bars need an explicit size. An SBorder whose only content is a brush reports a desired
+        // size of zero, and an overlay hands that to the slot - which is why the first attempt drew the
+        // handle over empty space with no track at all.
+        const trackW = Number(rect[2]) > 0 ? Number(rect[2]) : 200;
         const built = [
           'SNew(SOverlay)',
-          indent + '+ SOverlay::Slot().VAlign(VAlign_Center)[',
-          indent + '    SNew(SBorder).BorderImage(Brush(' + trackIdx + ')).Padding(FMargin(0.0f))',
+          indent + '+ SOverlay::Slot().VAlign(VAlign_Center).HAlign(HAlign_Left)[',
+          indent + '    SNew(SBox).WidthOverride(' + N.f(trackW) + ').HeightOverride(' + N.f(paintedThickness) + ')[',
+          indent + '        SNew(SBorder).BorderImage(Brush(' + trackIdx + ')).Padding(FMargin(0.0f))',
+          indent + '    ]',
           indent + ']',
           indent + '+ SOverlay::Slot().VAlign(VAlign_Center).HAlign(HAlign_Left)[',
-          indent + '    SNew(SBox).WidthOverride(' + N.f(fillW) + ')[',
+          indent + '    SNew(SBox).WidthOverride(' + N.f(fillW) + ').HeightOverride(' + N.f(paintedThickness) + ')[',
           indent + '        SNew(SBorder).BorderImage(Brush(' + fillIdx + ')).Padding(FMargin(0.0f))',
           indent + '    ]',
           indent + ']',
@@ -451,8 +479,51 @@ class SlateEmitter {
       let out = 'SNew(SProgressBar)';
       const pct = Number(N.pget(props, 'Percent'));
       if (Number.isFinite(pct)) out += '\n' + indent + '.Percent(' + N.f(pct) + ')';
-      const fill = N.pget(props, 'FillColorAndOpacity');
-      if (Array.isArray(fill)) out += '\n' + indent + '.FillColorAndOpacity(' + N.lc(fill) + ')';
+      // The fill colour the control was painted with, measured from the baked fill part: the declared
+      // FillColorAndOpacity is plain white and multiplying it by the engine's default fill image gives
+      // a duller blue than the design's accent.
+      const progressStyle0 = N.pget(props, 'WidgetStyle') || {};
+      const bakedFill = progressStyle0.FillImage && Array.isArray(progressStyle0.FillImage.bakedColor)
+        ? N.srgbBytesToLinear(progressStyle0.FillImage.bakedColor) : null;
+      if (bakedFill) {
+        // The fill is its own brush: setting FillColorAndOpacity alone multiplies against the engine's
+        // default fill image and lands on a duller blue than the design (measured 0,55,231 against the
+        // accent 0,117,255). A brush carrying the measured colour is exact.
+        this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(bakedFill) + ', FVector4(0.0f, 0.0f, 0.0f, 0.0f), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
+        out += '\n' + indent + '.FillImage(Brush(' + (this.brushExprs.length - 1) + '))';
+        out += '\n' + indent + '.FillColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 1.0f))';
+      } else {
+        const fill = N.pget(props, 'FillColorAndOpacity');
+        if (Array.isArray(fill)) out += '\n' + indent + '.FillColorAndOpacity(' + N.lc(fill) + ')';
+      }
+      // The track behind the fill: SProgressBar draws BackgroundImage full width, so a brush built from
+      // the measured track colour is what makes it read as a bar rather than a loose fill.
+      const progressStyle = N.pget(props, 'WidgetStyle') || {};
+      const background = progressStyle.BackgroundImage;
+      const measured = background && Array.isArray(background.bakedColor)
+        ? N.srgbBytesToLinear(background.bakedColor) : null;
+      if (measured) {
+        // Drawn as an explicit track instead of .BackgroundImage(): the attribute is set but the bar
+        // still painted straight onto the page, so the track is composed the same way the slider's is -
+        // an SBorder underneath, the bar on top.
+        this.brushExprs.push('H2USlate::BoxBrush(' + N.lc(measured) + ', FVector4(0.0f, 0.0f, 0.0f, 0.0f), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
+        const trackIndex = this.brushExprs.length - 1;
+        // The bar must not paint its own background: without this it draws the style's default dark
+        // slab straight over the track composed underneath. A transparent background leaves the
+        // track visible while the fill keeps coming from the bar itself.
+        this.brushExprs.push('H2USlate::BoxBrush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FVector4(0.0f, 0.0f, 0.0f, 0.0f), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
+        out += '\n' + indent + '.BackgroundImage(Brush(' + (this.brushExprs.length - 1) + '))';
+        const composed = [
+          'SNew(SOverlay)',
+          indent + '+ SOverlay::Slot()[',
+          indent + '    SNew(SBorder).BorderImage(Brush(' + trackIndex + ')).Padding(FMargin(0.0f))',
+          indent + ']',
+          indent + '+ SOverlay::Slot()[',
+          indent + '    ' + out.split('\n').join('\n' + indent + '    '),
+          indent + ']',
+        ].join('\n');
+        return '(' + composed + ')';
+      }
       return (out);
     }
 

@@ -3626,6 +3626,16 @@ class Mapper {
     const width = V.round(part.designWidth || 0, 2);
     const height = V.round(part.designHeight || 0, 2);
     if (width > 0 && height > 0) brush.imageSize = [width, height];
+    // The colour the part was painted with, measured from its pixels (see bake.js
+    // dominantOpaqueColor). UMG does not need it - the texture carries it - but a code-only consumer
+    // has no other way to know that a native range's accent is blue when its declared bar colour is
+    // plain white.
+    if (Array.isArray(part.bakedColor)) brush.bakedColor = part.bakedColor.slice();
+    // A range track carries two colours on one texture (accent, then plain track); see bake.js
+    // measureBarPalette. Exposed so a code-only consumer can paint both without the image.
+    if (part.palette) {
+      brush.palette = { fill: (part.palette.fill || []).slice(), track: (part.palette.track || []).slice() };
+    }
     return brush;
   }
 

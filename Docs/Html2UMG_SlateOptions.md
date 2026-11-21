@@ -294,3 +294,48 @@ SOverlay
 
     bash test/slate/engine_tests.sh              # 构建 + 渲染 + 几何对比
     python test/slate/make_comparison.py ...     # 三格对比图
+
+## 15. 控件皮肤：从烘焙像素里**量**颜色，而不是猜
+
+滑块/进度条这类控件的颜色，layout.json 里只有白色占位（`SliderBarColor=[1,1,1,1]`），真正的蓝色在
+烘焙出的皮肤贴图里。既然这条路线不交付贴图，就把颜色**量出来写进 JSON**：
+
+- `bake.js` 新增 `measureBarPalette()`：取轨道图**中间一行**扫描线。原生 range 的中间行同时包含
+  两段颜色（手柄左侧是强调色、右侧是空轨），于是「饱和度最高的」= 填充色、「最亮的」= 轨道色。
+  实测得到 `fill=(0,117,255)`、`track=(239,239,239)`，与浏览器逐像素一致。
+- 单个「主色」在这里没用：轨道图 584×40，绝大部分是被条遮住的页面背景，第一次尝试因此把背景
+  当成了控件颜色（测出 `(24,24,40)`）。
+- 颜色写进 `WidgetStyle.NormalBarImage.palette` 与 `bakedColor`，Slate 生成器直接取用。
+
+### 15.1 滑块
+
+- 手柄之前是被**拉伸**成胶囊的：画刷不设 `ImageSize` 会铺满整个槽，15×15 被拉成 292×20。现在用
+  `SizedBoxBrush(色, 半径=7.5, ImageSize=15×15)`，是正圆；尺寸取自 `NormalThumbImage.imageSize`。
+- `FSliderStyle` **没有**「已填充段」概念，所以两段轨道用 `SOverlay` 组合出来：底轨 + 按比例宽的
+  填充段 + 上层 `SSlider`（样式里的 bar 设为**透明**，否则它会盖住下面画好的轨道）。
+- 轨道**可见厚度**要单独算：`BarThickness=20` 是整个槽高，可见轨道只有约 6px。用
+  `thumbH × 0.4` 推算并夹取。
+
+### 15.2 进度条
+
+- `SProgressBar.BackgroundImage` 传了也不生效：它仍用样式里的**默认深色背景**把轨道盖住。
+  修法是给它一个**透明**背景，把颜色由下面的 `SBorder` 轨道提供。
+- 填充色不能只靠 `FillColorAndOpacity`：它会与引擎默认 FillImage 相乘（实测变成 `0,55,231`）。
+  改为给 `.FillImage` 一个承载测量色的画刷，`FillColorAndOpacity` 保持白。
+
+### 15.3 本轮实测
+
+| fixture | 差异像素 |
+|---|---|
+| 23-slate-canvas | 4.12% |
+| 24-slate-controls | 14.51% → **13.78%** |
+| 25-slate-switcher | 8.91% |
+
+关键采样点（24 号页，进度条 y=171）：
+
+| x | 浏览器 | Slate |
+|---|---|---|
+| 195 | (0,117,255) | (8,119,248) |
+| 260 | (239,239,239) | **(239,239,239)** |
+
+剩下未解决：复选框的勾（需要矢量绘制）、下拉框仍是引擎占位、`SSpinBox` 内边距导致 9px 偏差。

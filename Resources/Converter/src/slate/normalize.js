@@ -87,9 +87,18 @@ function propsBrush(props, base) {
   return normBrush(flat);
 }
 
+/** sRGB bytes [r,g,b,a] -> linear [r,g,b,a], matching the space FSlateColor expects. */
+function srgbBytesToLinear(bytes) {
+  const channel = (v) => {
+    const n = Math.max(0, Math.min(255, Number(v))) / 255;
+    return n <= 0.04045 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4);
+  };
+  return [channel(bytes[0]), channel(bytes[1]), channel(bytes[2]), (bytes[3] === undefined ? 255 : Number(bytes[3])) / 255];
+}
+
 /** Two-decimal rounding, so emitted literals stay readable. */
 function round2(value) {
   return Math.round(Number(value) * 100) / 100;
 }
 
-module.exports = { pget, normBrush, propsBrush, f, lc, txt, str, warn, round2, ALIGN_H, ALIGN_V, JUSTIFY };
+module.exports = { pget, normBrush, propsBrush, f, lc, txt, str, warn, round2, srgbBytesToLinear, ALIGN_H, ALIGN_V, JUSTIFY };
