@@ -339,3 +339,54 @@ SOverlay
 | 260 | (239,239,239) | **(239,239,239)** |
 
 剩下未解决：复选框的勾（需要矢量绘制）、下拉框仍是引擎占位、`SSpinBox` 内边距导致 9px 偏差。
+
+## 16. 三项修整：数字框多余框、进度条高度、嵌套收敛
+
+### 16.1 数字框外面的一圈多余框
+
+`SSpinBox` **自带背景**（`FSpinBoxStyle::BackgroundBrush` 等 6 个画刷），而设计稿本来就有一层 Border，
+两者叠加就多出一圈框。修法是复制引擎默认样式（保留箭头）再把 6 个背景/填充画刷全部置为 `NoBrush()`：
+
+```cpp
+TSharedPtr<FSpinBoxStyle> S = MakeShared<FSpinBoxStyle>(
+    FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));   // 保留箭头
+S->BackgroundBrush = H2USlate::NoBrush();   // 以及 Hovered/Active/InactiveFill/HoveredFill/ActiveFill
+```
+
+### 16.2 进度条的“不对”是高，不是色
+
+逐像素量出来的差异只在纵向：横向浏览器 187–345、Slate 187–346（一致），但浏览器只画 **8–10px** 高的条，
+我们按元素框画了 **18px**（填满整行）。
+
+不能用 alpha 量：烘焙时背景是**不透明**的页面，整张图每行都“不透明”，第一次量出来就是 18。
+改为「与图像**角落背景色**不同的行」来量，得到 **9px**，并据此把轨道和条都按 9px 居中绘制。
+
+### 16.3 过度嵌套
+
+两个来源，都已消除：
+
+- `pin()` **无条件**给每个子项套一层 `SBox`，即使它算不出任何尺寸（画布子项就是这种情况），于是出现大量
+  `SNew(SBox)[ ... ]` 空壳；
+- `SizeBox` 节点自己就输出一个 `SBox`，外面又被 `pin()` 套了一层，形成 `SBox[ SBox[ SBox[ ... ] ] ]`。
+
+修法：`pin()` 算不出尺寸就**返回原表达式**；把尺寸计算抽成 `exactSizeLines()`，由 `pin()` 和 `SizeBox`
+分支共用；`SizeBox` 不再被 `pin()` 包裹。
+
+| 指标（24 号页面） | 之前 | 之后 |
+|---|---|---|
+| `SNew(SBox)` 数量 | 36 | **19** |
+| 最大括号嵌套深度 | 15 | **12** |
+
+### 16.4 本轮验证受阻（项目侧）
+
+UHT 拒绝了项目里的一个重名头文件：
+
+```
+Error: Two headers with the same name is not allowed.
+  Source/FPVSkyline/Public/Replay/ReplaySubsystem.h
+  conflicts with Engine/Source/Runtime/Engine/Public/ReplaySubsystem.h
+```
+
+这与插件无关，但 `-SingleFile` 也会先跑 UHT，所以本轮**没能出渲染图**。改为静态核对生成代码：
+数字框已带 `.Style(SpinStyle(0))`、进度条已是 9px 轨道 + 9px 条 + 透明背景。项目侧把头文件改名后
+（例如 `FPSkylineReplaySubsystem.h`），跑 `bash test/slate/engine_tests.sh` 即可出图与对比。

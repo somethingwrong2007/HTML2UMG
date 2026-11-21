@@ -3636,6 +3636,9 @@ class Mapper {
     if (part.palette) {
       brush.palette = { fill: (part.palette.fill || []).slice(), track: (part.palette.track || []).slice() };
     }
+    // The painted band of a native control is shorter than its element box; recorded so a code-only
+    // consumer can draw the bar at the size the browser actually paints it.
+    if (Number(part.paintedHeight) > 0) brush.paintedHeight = Number(part.paintedHeight);
     return brush;
   }
 

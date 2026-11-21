@@ -200,7 +200,10 @@ class SlateEmitter {
     const parentRect = Array.isArray(node.rect) ? node.rect : null;
     let mainEnd = null;
     for (const kid of kids) {
-      const body = pad + this.pin(kid, pad, this.node(kid, pad));
+      const kidExpr = this.node(kid, pad);
+      // A SizeBox already states its size (exactSizeLines), so wrapping it again would only add a
+      // second SBox with the same overrides.
+      const body = pad + (/SizeBox/.test(String(kid.class)) ? kidExpr : this.pin(kid, pad, kidExpr));
       if (mode === 'single') {
         parts.push(body);
         continue;
@@ -323,7 +326,13 @@ class SlateEmitter {
           const v = Number(N.pget(props, key));
           return Number.isFinite(v) && v > 0 ? '\n' + indent + '.' + arg + '(' + N.f(v) + ')' : '';
         };
-        const head = 'SNew(SBox)' + over('MinDesiredWidth', 'MinDesiredWidth') + over('MinDesiredHeight', 'MinDesiredHeight') + over('MaxDesiredWidth', 'MaxDesiredWidth') + over('MaxDesiredHeight', 'MaxDesiredHeight');
+        // The SizeBox states the design's exact size itself. Letting pin() wrap it in a second SBox
+        // produced "SBox[ SBox[ SBox[ ... ] ] ]" around every sized node - the over-nesting that made
+        // the tree read nothing like the design.
+        let head = 'SNew(SBox)'
+          + over('MinDesiredWidth', 'MinDesiredWidth') + over('MinDesiredHeight', 'MinDesiredHeight')
+          + over('MaxDesiredWidth', 'MaxDesiredWidth') + over('MaxDesiredHeight', 'MaxDesiredHeight');
+        head += this.exactSizeLines(node, indent).join('');
         return wrapChild(head, inner);
       }
       if (/ScaleBox/.test(cls)) {
@@ -454,15 +463,18 @@ class SlateEmitter {
         // size of zero, and an overlay hands that to the slot - which is why the first attempt drew the
         // handle over empty space with no track at all.
         const trackW = Number(rect[2]) > 0 ? Number(rect[2]) : 200;
+        // The painted track is thinner than the slot (BarThickness is the slot height); paintedThickness
+        // is derived from the thumb above.
+        const barH = paintedThickness;
         const built = [
           'SNew(SOverlay)',
           indent + '+ SOverlay::Slot().VAlign(VAlign_Center).HAlign(HAlign_Left)[',
-          indent + '    SNew(SBox).WidthOverride(' + N.f(trackW) + ').HeightOverride(' + N.f(paintedThickness) + ')[',
+          indent + '    SNew(SBox).WidthOverride(' + N.f(trackW) + ').HeightOverride(' + N.f(barH) + ')[',
           indent + '        SNew(SBorder).BorderImage(Brush(' + trackIdx + ')).Padding(FMargin(0.0f))',
           indent + '    ]',
           indent + ']',
           indent + '+ SOverlay::Slot().VAlign(VAlign_Center).HAlign(HAlign_Left)[',
-          indent + '    SNew(SBox).WidthOverride(' + N.f(fillW) + ').HeightOverride(' + N.f(paintedThickness) + ')[',
+          indent + '    SNew(SBox).WidthOverride(' + N.f(fillW) + ').HeightOverride(' + N.f(barH) + ')[',
           indent + '        SNew(SBorder).BorderImage(Brush(' + fillIdx + ')).Padding(FMargin(0.0f))',
           indent + '    ]',
           indent + ']',
@@ -513,13 +525,26 @@ class SlateEmitter {
         // track visible while the fill keeps coming from the bar itself.
         this.brushExprs.push('H2USlate::BoxBrush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), FVector4(0.0f, 0.0f, 0.0f, 0.0f), 0.0f, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))');
         out += '\n' + indent + '.BackgroundImage(Brush(' + (this.brushExprs.length - 1) + '))';
+        // The painted bar is much shorter than the element box: a native progress paints a thin bar
+        // inside an 18px row. The height comes from the baked band, measured against its own
+        // background (alpha is useless - the bake is captured over an opaque page, so every row is
+        // "opaque" and the first attempt reported the full box height).
+        const nodeRect = Array.isArray(node.rect) ? node.rect : [0, 0, 0, 0];
+        const rectH = Number(nodeRect[3]) > 0 ? Number(nodeRect[3]) : 18;
+        const barH = Number(background.paintedHeight) > 0
+          ? Math.min(rectH, Number(background.paintedHeight))
+          : Math.max(2, Math.round(rectH * 0.55));
         const composed = [
           'SNew(SOverlay)',
-          indent + '+ SOverlay::Slot()[',
-          indent + '    SNew(SBorder).BorderImage(Brush(' + trackIndex + ')).Padding(FMargin(0.0f))',
+          indent + '+ SOverlay::Slot().VAlign(VAlign_Center)[',
+          indent + '    SNew(SBox).HeightOverride(' + N.f(barH) + ')[',
+          indent + '        SNew(SBorder).BorderImage(Brush(' + trackIndex + ')).Padding(FMargin(0.0f))',
+          indent + '    ]',
           indent + ']',
-          indent + '+ SOverlay::Slot()[',
-          indent + '    ' + out.split('\n').join('\n' + indent + '    '),
+          indent + '+ SOverlay::Slot().VAlign(VAlign_Center)[',
+          indent + '    SNew(SBox).HeightOverride(' + N.f(barH) + ')[',
+          indent + '        ' + out.split('\n').join('\n' + indent + '        '),
+          indent + '    ]',
           indent + ']',
         ].join('\n');
         return '(' + composed + ')';
@@ -552,6 +577,24 @@ class SlateEmitter {
         out += '\n' + indent + '.MinFractionalDigits(0)';
         out += '\n' + indent + '.MaxFractionalDigits(0)';
       }
+      // SSpinBox draws its OWN background from FSpinBoxStyle, and the design already has a Border
+      // around it - so the stock style added a second frame inside ours. Copy the engine style (to keep
+      // its arrows) and blank every background/fill brush, leaving our Border as the only frame.
+      const spinIdx = this.spinStyleCount || 0;
+      this.spinStyleCount = spinIdx + 1;
+      this.styleInits.push([
+        '{',
+        '    TSharedPtr<FSpinBoxStyle> S = MakeShared<FSpinBoxStyle>(FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));',
+        '    S->BackgroundBrush = H2USlate::NoBrush();',
+        '    S->HoveredBackgroundBrush = H2USlate::NoBrush();',
+        '    S->ActiveBackgroundBrush = H2USlate::NoBrush();',
+        '    S->InactiveFillBrush = H2USlate::NoBrush();',
+        '    S->HoveredFillBrush = H2USlate::NoBrush();',
+        '    S->ActiveFillBrush = H2USlate::NoBrush();',
+        '    SpinStyleStore.Add(S);',
+        '}',
+      ].join('\n'));
+      out += '\n' + indent + '.Style(SpinStyle(' + spinIdx + '))';
       return (out);
     }
 
@@ -607,6 +650,36 @@ class SlateEmitter {
    * is what removes the drift Slate layout introduces when a widget has no intrinsic size (a checkbox
    * row was 21px in the design and 32px in the render, and it accumulated down the page).
    */
+  /**
+   * The WidthOverride/HeightOverride lines a node needs from its measured rect.
+   *
+   * Shared by pin() and by the SizeBox branch, so a sized node states its size ONCE instead of being
+   * wrapped in a second SBox carrying the same numbers.
+   */
+  exactSizeLines(nodeArg, indent) {
+    const lines = [];
+    const r = nodeArg.rect;
+    if (!Array.isArray(r) || r.length < 4) return lines;
+    const slot = nodeArg.slot || {};
+    const rule = (slot.Size && slot.Size.SizeRule) || 'Automatic';
+    const mode = this.parentMode;
+    let wantW = false;
+    let wantH = false;
+    if (mode === 'hbox') {
+      wantW = rule !== 'Fill';
+      wantH = slot.VerticalAlignment !== 'Fill';
+    } else if (mode === 'vbox') {
+      wantH = rule !== 'Fill';
+      wantW = slot.HorizontalAlignment !== 'Fill';
+    } else if (mode === 'overlay' || mode === 'single') {
+      wantW = true;
+      wantH = true;
+    }
+    if (wantW && Number(r[2]) > 0) lines.push('\n' + indent + '.WidthOverride(' + N.f(r[2]) + ')');
+    if (wantH && Number(r[3]) > 0) lines.push('\n' + indent + '.HeightOverride(' + N.f(r[3]) + ')');
+    return lines;
+  }
+
   pin(nodeArg, indent, expr) {
     const r = nodeArg.rect;
     if (!Array.isArray(r) || r.length < 4) return expr;
@@ -633,12 +706,11 @@ class SlateEmitter {
       wantH = true;
     }
     let head = 'SNew(SBox)';
-    if (wantW && Number(r[2]) > 0) {
-      head += '\n' + indent + '.WidthOverride(' + N.f(r[2]) + ')';
-    }
-    if (wantH && Number(r[3]) > 0) {
-      head += '\n' + indent + '.HeightOverride(' + N.f(r[3]) + ')';
-    }
+    head += this.exactSizeLines(nodeArg, indent).join('');
+    // Nothing to pin means nothing to wrap. Wrapping unconditionally produced a bare
+    // "SNew(SBox)[ ... ]" around every canvas child - 36 SBoxes for 78 widgets, most of them empty
+    // shells that only made the generated tree harder to read and deeper than the design.
+    if (head === 'SNew(SBox)') return expr;
     const body = indent + '    ' + expr.split('\n').join('\n' + indent + '    ');
     return head + '\n' + indent + '[\n' + body + '\n' + indent + ']';
   }
@@ -697,6 +769,8 @@ class SlateEmitter {
       '    const FSlateBrush* Brush(int32 Index) const { return BrushStore[Index].Get(); }',
       '    const FButtonStyle* Style(int32 Index) const { return StyleStore[Index].Get(); }',
       '    const FSliderStyle* SliderStyle(int32 Index) const { return SliderStyleStore[Index].Get(); }',
+      '    TArray<TSharedPtr<FSpinBoxStyle>> SpinStyleStore;',
+      '    const FSpinBoxStyle* SpinStyle(int32 Index) const { return SpinStyleStore[Index].Get(); }',
       '};',
       '',
     ]).join('\n');

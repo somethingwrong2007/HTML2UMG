@@ -609,6 +609,51 @@ async function shot(session, rect, scale) {
  */
 
 
+
+
+/**
+ * Height of the band that differs from the image's own corner colour, in image pixels.
+ *
+ * Alpha is useless for this: a baked bar is captured against an opaque page, so every row is
+ * "opaque" and alpha measurement returned the full box height (18px) for a bar the browser paints
+ * ~10px tall. Comparing each row against the background at the corner finds the painted band.
+ */
+function paintedBandHeight(image) {
+  if (!image.width || !image.height) return 0;
+  const bg = [image.data[0], image.data[1], image.data[2]];
+  let top = -1;
+  let bottom = -1;
+  for (let y = 0; y < image.height; y += 1) {
+    let has = false;
+    for (let x = 0; x < image.width; x += 1) {
+      const i = (y * image.width + x) * 4;
+      if (image.data[i + 3] <= 96) continue;
+      if (Math.abs(image.data[i] - bg[0]) > 32 || Math.abs(image.data[i + 1] - bg[1]) > 32 ||
+          Math.abs(image.data[i + 2] - bg[2]) > 32) { has = true; break; }
+    }
+    if (has) { if (top < 0) top = y; bottom = y; }
+  }
+  return top < 0 ? 0 : bottom - top + 1;
+}
+/**
+ * Height of the painted band in an image, in its own pixels: rows that are not nearly transparent.
+ *
+ * A native control paints a thin bar inside a taller element box, so the element rect is not the bar
+ * height - the progress fill texture is 160x18 while the painted bar is ~10px, and drawing at the box
+ * height made the bar three times too tall. Measured, not assumed.
+ */
+function opaqueBandHeight(image) {
+  let top = -1;
+  let bottom = -1;
+  for (let y = 0; y < image.height; y += 1) {
+    let has = false;
+    for (let x = 0; x < image.width; x += 1) {
+      if (image.data[(y * image.width + x) * 4 + 3] > 96) { has = true; break; }
+    }
+    if (has) { if (top < 0) top = y; bottom = y; }
+  }
+  return top < 0 ? 0 : bottom - top + 1;
+}
 /**
  * The two colours of a range track, measured from one scanline through its middle.
  *
@@ -970,6 +1015,9 @@ async function bakeProgress(session, rec, clip, scale, radii, register, label, w
     const masked = applyRoundedMask(trackImage, radii, scale);
     const added = register(masked, `${label} track`);
     if (added) {
+      // The painted bar is much shorter than the element box: a native progress paints a thin bar
+      // inside an 18px box, so drawing at the box height made the bar three times too tall.
+      added.paintedHeight = Math.round(paintedBandHeight(masked) / (scale || 1));
       // The track's painted colour, measured the same way the range track is. Without it a code-only
       // consumer can only draw a transparent background, which is why the progress bar looked like a
       // fill floating on the page instead of a fill inside a track.
