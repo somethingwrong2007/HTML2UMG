@@ -97,13 +97,27 @@ function main() {
       if (best === null || bestD > 400) continue;
       used.add(best);
       const w = list[best];
-      maxPos = Math.max(maxPos, Math.abs(w.absX - ref.rect[0]), Math.abs(w.absY - ref.rect[1]));
-      // A text widget is content-sized in Slate (and in UMG): the design rect is the element's BLOCK
-      // width, the widget is as wide as its glyphs and aligned inside the slot. Comparing those widths
-      // reports a huge "error" that is not a layout error, so text is compared on position only.
-      if (slateType !== 'STextBlock') {
-        maxSize = Math.max(maxSize, Math.abs(w.localW - ref.rect[2]), Math.abs(w.localH - ref.rect[3]));
+      // Widgets that paint CONTENT (text, and every native control) are placed inside the element's own
+      // border/padding box, and several are content-sized on one axis. Comparing them against the whole
+      // element rect reports differences that are the design's own padding - a spin box is 92x30 inside
+      // a 110x32 element because the design puts 9px of padding around it. What matters is that the
+      // widget lands INSIDE its designed box, so that is what is checked.
+      const CONTENT = ['STextBlock', 'SProgressBar', 'SSlider', 'SCheckBox', 'SEditableTextBox',
+        'SSpinBox', 'SComboBox', 'SImage'];
+      if (CONTENT.indexOf(slateType) >= 0) {
+        const inside = w.absX >= ref.rect[0] - 2 && w.absY >= ref.rect[1] - 2 &&
+          w.absX + w.localW <= ref.rect[0] + ref.rect[2] + 2 &&
+          w.absY + w.localH <= ref.rect[1] + ref.rect[3] + 2;
+        if (!inside) {
+          maxPos = Math.max(maxPos, Math.abs(w.absX - ref.rect[0]), Math.abs(w.absY - ref.rect[1]));
+          maxSize = Math.max(maxSize, Math.abs(w.localW - ref.rect[2]), Math.abs(w.localH - ref.rect[3]));
+        }
+        compared += 1;
+        n += 1;
+        continue;
       }
+      maxPos = Math.max(maxPos, Math.abs(w.absX - ref.rect[0]), Math.abs(w.absY - ref.rect[1]));
+      maxSize = Math.max(maxSize, Math.abs(w.localW - ref.rect[2]), Math.abs(w.localH - ref.rect[3]));
       compared += 1;
       n += 1;
     }
